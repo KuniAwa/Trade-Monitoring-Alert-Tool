@@ -308,14 +308,14 @@ def run_checks() -> dict:
     if not api_key:
         return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
 
-    nikkei = get_env("NIKKEI_SYMBOL") or "N225"
-    symbols = [
-        ("USD/JPY", "USD/JPY"),
-        (nikkei, "日経225先物"),
-    ]
+    symbols = [("USD/JPY", "USD/JPY")]
+    nikkei = get_env("NIKKEI_SYMBOL")
+    if nikkei:
+        symbols.append((nikkei, "日経225先物"))
 
     sent = 0
     seen = set()  # 同一実行内の重複防止: (symbol, direction)
+    errors = []
 
     for symbol, label in symbols:
         try:
@@ -328,9 +328,12 @@ def run_checks() -> dict:
                 send_alert_email(a)
                 sent += 1
         except Exception as e:
-            return {"ok": False, "error": str(e), "sent": sent}
+            errors.append(f"{symbol}: {str(e)[:200]}")
+            continue
 
-    return {"ok": True, "sent": sent, "error": None}
+    if errors and sent == 0 and len(errors) == len(symbols):
+        return {"ok": False, "error": "; ".join(errors), "sent": 0}
+    return {"ok": True, "sent": sent, "error": None, "skipped": errors if errors else None}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -347,13 +350,20 @@ class handler(BaseHTTPRequestHandler):
         try:
             result = run_checks()
         except Exception as e:
-            result = {"ok": False, "error": str(e), "sent": 0}
+            err_msg = str(e).replace("\r", " ").replace("\n", " ")[:500]
+            result = {"ok": False, "error": err_msg, "sent": 0}
 
+        if result.get("error"):
+            result["error"] = str(result["error"]).replace("\r", " ").replace("\n", " ")[:500]
         status = 200 if result.get("ok") else 500
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        try:
+            body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+            self.wfile.write(body)
+        except Exception as write_err:
+            self.wfile.write(json.dumps({"ok": False, "error": str(write_err)[:200], "sent": 0}).encode("utf-8"))
 
     def log_message(self, format, *args):
         pass

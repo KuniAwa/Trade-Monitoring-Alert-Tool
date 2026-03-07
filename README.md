@@ -58,7 +58,7 @@ Vercel ダッシュボードの **Project → Settings → Environment Variables
 | `SMTP_PORT` | ○ | ポート（例: `587`）。 |
 | `SMTP_USER` | ○ | SMTP 認証ユーザー。 |
 | `SMTP_PASSWORD` | ○ | SMTP 認証パスワード。 |
-| `NIKKEI_SYMBOL` | - | 日経225先物のシンボル。未設定時は `N225`。 |
+| `NIKKEI_SYMBOL` | - | 日経225用のシンボル。**Twelve Data では N225 は無効**なため、未設定なら日経は監視せず USD/JPY のみ。有効なシンボルが分かれば設定可。 |
 
 **CRON_SECRET** の生成例:
 
@@ -95,7 +95,7 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" "https://your-project.vercel.ap
 ## 注意事項
 
 - **Twelve Data** は時系列（日足・15分足）のみ使用。SMA と パラボリックSAR はアプリ内で計算するため、1回の Cron は「銘柄数 × 2」リクエストのみです。
-- 日経225先物のシンボルは Twelve Data の仕様に依存します。利用可能なシンボルは [Twelve Data のシンボル検索](https://twelvedata.com/docs#symbol-search) で確認し、必要に応じて `NIKKEI_SYMBOL` を変更してください。
+- **日経225**: Twelve Data では `N225` は無効（404）です。`NIKKEI_SYMBOL` を**未設定のまま**にすると USD/JPY のみ監視します。日経を監視したい場合は [Twelve Data のシンボル検索](https://twelvedata.com/docs#symbol-search) で有効なシンボルを確認し、設定してください。
 - 重複通知の防止は「同一 Cron 実行内で同一銘柄・同一方向は1回まで」です。日をまたぐ重複を防ぐには Vercel KV 等の永続ストアの利用を検討してください（仕様書に記載）。
 
 ## ライセンス
