@@ -1,0 +1,18 @@
+# 環境変数（秘密情報を含むため絶対にプッシュしない）
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Vercel
+.vercel/
+
+# その他
+.DS_Store
+*.log
