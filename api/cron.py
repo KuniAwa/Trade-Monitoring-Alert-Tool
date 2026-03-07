@@ -310,7 +310,7 @@ def run_checks() -> dict:
 
     symbols = [("USD/JPY", "USD/JPY")]
     nikkei = get_env("NIKKEI_SYMBOL")
-    if nikkei:
+    if nikkei and nikkei.upper() != "N225":
         symbols.append((nikkei, "日経225先物"))
 
     sent = 0
@@ -336,34 +336,46 @@ def run_checks() -> dict:
     return {"ok": True, "sent": sent, "error": None, "skipped": errors if errors else None}
 
 
+def _safe_error_msg(s: str | None) -> str:
+    if s is None:
+        return ""
+    return str(s).replace("\r", " ").replace("\n", " ")[:500]
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        auth = self.headers.get("Authorization", "")
-        expected = get_env("CRON_SECRET")
-        if not expected or auth != f"Bearer {expected}":
-            self.send_response(401)
+        try:
+            auth = self.headers.get("Authorization", "")
+            expected = get_env("CRON_SECRET")
+            if not expected or auth != f"Bearer {expected}":
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8"))
+                return
+
+            try:
+                result = run_checks()
+            except Exception as e:
+                result = {"ok": False, "error": _safe_error_msg(str(e)), "sent": 0}
+
+            if result.get("error"):
+                result["error"] = _safe_error_msg(result.get("error"))
+            status = 200 if result.get("ok") else 500
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Unauthorized"}, ensure_ascii=False).encode("utf-8"))
-            return
-
-        try:
-            result = run_checks()
-        except Exception as e:
-            err_msg = str(e).replace("\r", " ").replace("\n", " ")[:500]
-            result = {"ok": False, "error": err_msg, "sent": 0}
-
-        if result.get("error"):
-            result["error"] = str(result["error"]).replace("\r", " ").replace("\n", " ")[:500]
-        status = 200 if result.get("ok") else 500
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.end_headers()
-        try:
             body = json.dumps(result, ensure_ascii=False).encode("utf-8")
             self.wfile.write(body)
-        except Exception as write_err:
-            self.wfile.write(json.dumps({"ok": False, "error": str(write_err)[:200], "sent": 0}).encode("utf-8"))
+        except Exception as outer:
+            try:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                err = _safe_error_msg(str(outer))
+                self.wfile.write(json.dumps({"ok": False, "error": err, "sent": 0}).encode("utf-8"))
+            except Exception:
+                pass
 
     def log_message(self, format, *args):
         pass
