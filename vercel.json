@@ -4,10 +4,5 @@
       "path": "/api/cron",
       "schedule": "*/15 * * * *"
     }
-  ],
-  "functions": {
-    "api/cron.py": {
-      "runtime": "python3.12"
-    }
-  }
+  ]
 }
