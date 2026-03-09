@@ -33,8 +33,8 @@
 
 ## 4. 足種・データ
 
-- **メイン足**: 15分足（`interval=15min`）
-- **前日高値・前日安値**: 日足（`interval=1day`）の直近2本のうち、1本前の日足の high / low を使用
+- **メイン足**: 15分足（`interval=15min`）、表示は日本時間（`timezone=Asia/Tokyo`）
+- **前日高値・前日安値**: 日足（`interval=1day`）の直近2本のうち、1本前の日足の high / low を使用。**NY 基準**のため `timezone=America/New_York` で取得（Twelve Data の 1day はタイムゾーン指定でその地域の「日」で集計される）
 
 ---
 

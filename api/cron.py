@@ -24,14 +24,14 @@ def get_env(name: str, default: str = "") -> str:
 
 
 def get_daily_ohlc(api_key: str, symbol: str) -> list:
-    """日足を取得（直近3本、新しい順）。"""
+    """日足を取得（直近3本、新しい順）。前日高値・安値は NY 基準のため America/New_York で取得。"""
     r = requests.get(
         f"{BASE_URL}/time_series",
         params={
             "symbol": symbol,
             "interval": INTERVAL_DAY,
             "outputsize": OUTPUTSIZE_DAY,
-            "timezone": "Asia/Tokyo",
+            "timezone": "America/New_York",
             "apikey": api_key,
             "format": "JSON",
         },
