@@ -94,6 +94,68 @@ def get_1h_ohlc(api_key: str, symbol: str) -> list:
     return data["values"]
 
 
+def check_symbol_available(api_key: str, symbol: str) -> bool:
+    """指定シンボルが Twelve Data で取得可能か簡易チェック（日足1本だけ取得）。"""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/time_series",
+            params={
+                "symbol": symbol,
+                "interval": INTERVAL_DAY,
+                "outputsize": 1,
+                "timezone": "America/New_York",
+                "apikey": api_key,
+                "format": "JSON",
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return False
+        data = r.json()
+        return "values" in data and len(data.get("values", [])) > 0
+    except Exception:
+        return False
+
+
+def get_nikkei_symbol_candidates() -> list[str]:
+    """日経225先物のシンボル候補リスト。環境変数 NIKKEI_SYMBOL_CANDIDATES で上書き可（カンマ区切り）。"""
+    env = get_env("NIKKEI_SYMBOL_CANDIDATES")
+    if env:
+        return [s.strip() for s in env.split(",") if s.strip()]
+    return ["N225", "NIY", "NK225", "1321"]
+
+
+def resolve_nikkei_symbol(api_key: str) -> str | None:
+    """候補を順に試し、取得可能な最初の日経225系シンボルを返す。見つからなければ None。"""
+    for sym in get_nikkei_symbol_candidates():
+        if check_symbol_available(api_key, sym):
+            return sym
+    return None
+
+
+def search_symbol_candidates(api_key: str, query: str) -> list[dict]:
+    """
+    Twelve Data のシンボル検索。日経225など候補を調べる補助用。
+    戻り値: [ {"symbol": "...", "name": "...", "exchange": "..." }, ... ]
+    """
+    try:
+        r = requests.get(
+            f"{BASE_URL}/stocks",
+            params={"symbol": query, "apikey": api_key, "format": "JSON"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        if isinstance(data, list):
+            return [{"symbol": x.get("symbol", ""), "name": x.get("name", ""), "exchange": x.get("exchange", "")} for x in data]
+        if isinstance(data, dict) and "data" in data:
+            return [{"symbol": x.get("symbol", ""), "name": x.get("name", ""), "exchange": x.get("exchange", "")} for x in data["data"]]
+        return []
+    except Exception:
+        return []
+
+
 def load_settings() -> dict:
     """settings.json を読み、監視時間などを返す。"""
     try:
@@ -431,9 +493,14 @@ def run_checks() -> dict:
         ("EUR/JPY", "EUR/JPY"),
         ("AUD/JPY", "AUD/JPY"),
     ]
-    nikkei = get_env("NIKKEI_SYMBOL")
-    if nikkei and nikkei.upper() != "N225":
-        symbols.append((nikkei, "日経225先物"))
+    nikkei_explicit = get_env("NIKKEI_SYMBOL")
+    if nikkei_explicit:
+        if nikkei_explicit.upper() != "N225" and check_symbol_available(api_key, nikkei_explicit):
+            symbols.append((nikkei_explicit, "日経225先物"))
+    else:
+        resolved = resolve_nikkei_symbol(api_key)
+        if resolved:
+            symbols.append((resolved, "日経225先物"))
 
     sent = 0
     seen = set()  # 同一実行内の重複防止: (symbol, direction)

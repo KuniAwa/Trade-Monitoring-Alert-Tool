@@ -58,7 +58,8 @@ Vercel ダッシュボードの **Project → Settings → Environment Variables
 | `SMTP_PORT` | ○ | ポート（例: `587`）。 |
 | `SMTP_USER` | ○ | SMTP 認証ユーザー。 |
 | `SMTP_PASSWORD` | ○ | SMTP 認証パスワード。 |
-| `NIKKEI_SYMBOL` | - | 日経225用のシンボル。**Twelve Data では N225 は無効**なため、未設定なら日経は監視せず USD/JPY のみ。有効なシンボルが分かれば設定可。 |
+| `NIKKEI_SYMBOL` | - | 日経225先物のシンボルを**1つ**指定。未設定なら候補（N225, NIY, NK225, 1321）を順に試し、取得可能なものを監視に追加。 |
+| `NIKKEI_SYMBOL_CANDIDATES` | - | 日経225の候補をカンマ区切りで指定（例: `NIY,NK225`）。未設定時は上記の既定候補を使用。 |
 
 **CRON_SECRET** の生成例:
 
@@ -114,7 +115,7 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" "https://your-project.vercel.ap
 
 - **監視対象**: USD/JPY, EUR/JPY, AUD/JPY（＋ NIKKEI_SYMBOL 設定時は日経225）。**1時間足**で環境認識（20MAトレンド）、**押し率**は33%以内を理想・50%以上は通知対象外です。
 - **Twelve Data**: 日足・15分足・1時間足を取得。SMA・SAR はアプリ内計算。1回の Cron は銘柄数 × 3 リクエスト（日足・15分・1h）。
-- **日経225**: Twelve Data では `N225` は無効（404）です。`NIKKEI_SYMBOL` を**未設定のまま**にすると USD/JPY のみ監視します。日経を監視したい場合は [Twelve Data のシンボル検索](https://twelvedata.com/docs#symbol-search) で有効なシンボルを確認し、設定してください。
+- **日経225先物**: シンボルはプロバイダにより異なります。`NIKKEI_SYMBOL` 未設定時は **N225, NIY, NK225, 1321** を順に試し、取得できたものを監視します。エラーになりやすい場合は **NIKKEI_SYMBOL** に有効なシンボルを直接指定するか、**NIKKEI_SYMBOL_CANDIDATES** で試す候補をカンマ区切りで指定してください。候補の確認はプロジェクトルートで `python -c "from api.cron import search_symbol_candidates, check_symbol_available; import os; k=os.environ.get('TWELVE_DATA_API_KEY',''); print(search_symbol_candidates(k,'nikkei')); print('N225 ok:', check_symbol_available(k,'N225'))"` のように実行できます。
 - 重複通知の防止は「同一 Cron 実行内で同一銘柄・同一方向は1回まで」です。日をまたぐ重複を防ぐには Vercel KV 等の永続ストアの利用を検討してください（仕様書に記載）。
 
 ## ライセンス
