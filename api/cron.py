@@ -7,8 +7,6 @@ import os
 import json
 import smtplib
 import ssl
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
@@ -33,6 +31,7 @@ def get_daily_ohlc(api_key: str, symbol: str) -> list:
             "symbol": symbol,
             "interval": INTERVAL_DAY,
             "outputsize": OUTPUTSIZE_DAY,
+            "timezone": "Asia/Tokyo",
             "apikey": api_key,
             "format": "JSON",
         },
@@ -46,13 +45,14 @@ def get_daily_ohlc(api_key: str, symbol: str) -> list:
 
 
 def get_15min_ohlc(api_key: str, symbol: str) -> list:
-    """15分足を取得（直近30本、新しい順）。"""
+    """15分足を取得（直近30本、新しい順）。日本時間で返す。"""
     r = requests.get(
         f"{BASE_URL}/time_series",
         params={
             "symbol": symbol,
             "interval": INTERVAL_15,
             "outputsize": OUTPUTSIZE_15,
+            "timezone": "Asia/Tokyo",
             "apikey": api_key,
             "format": "JSON",
         },
@@ -260,18 +260,12 @@ def evaluate_symbol(api_key: str, symbol: str, label: str) -> list:
     return alerts
 
 
-def _datetime_to_jst(dt_str: str) -> str:
-    """API の日時文字列（UTC 想定）を日本時間（JST）で返す。パースに失敗したらそのまま返す。"""
+def _format_datetime_display(dt_str: str) -> str:
+    """メール用の日時表示。API に timezone=Asia/Tokyo を指定しているためそのまま JST として表示。"""
     if not dt_str:
         return dt_str
     s = dt_str.strip()[:19]
-    try:
-        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-        utc = dt.replace(tzinfo=ZoneInfo("UTC"))
-        jst = utc.astimezone(ZoneInfo("Asia/Tokyo"))
-        return jst.strftime("%Y-%m-%d %H:%M:%S JST")
-    except (ValueError, TypeError):
-        return dt_str
+    return f"{s} JST" if s else dt_str
 
 
 def send_alert_email(alert: dict) -> None:
@@ -286,7 +280,7 @@ def send_alert_email(alert: dict) -> None:
     if not all([from_addr, to_addr, smtp_host, smtp_port, smtp_user, smtp_pass]):
         return
 
-    dt_display = _datetime_to_jst(alert.get("datetime", ""))
+    dt_display = _format_datetime_display(alert.get("datetime", ""))
     direction_ja = "前日高値ブレイク（ロング）" if alert["direction"] == "long" else "前日安値ブレイク（ショート）"
     subject = f"[相場アラート] {alert['label']} {direction_ja} - {dt_display}"
 
