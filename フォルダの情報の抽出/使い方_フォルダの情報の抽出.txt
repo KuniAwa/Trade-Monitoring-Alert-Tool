@@ -1,0 +1,23 @@
+【ツールの格納場所】
+C:\Users\kunik\OneDrive\ドキュメント\Apps\Cursor\フォルダの情報の抽出
+
+① Windows PowerShell を開く
+
+② 上記フォルダに移動
+cd "C:\Users\kunik\OneDrive\ドキュメント\Apps\Cursor\フォルダの情報の抽出"
+
+③ プログラムを実行（対象フォルダのパスを指定）
+python folder_to_excel.py "C:\対象フォルダのパス"
+
+例：
+python folder_to_excel.py "C:\Users\kunik\OneDrive\ドキュメント\Work\01 クライアント\04 KIC\11 自主点検_収益認識\調査結果_アルファ"
+
+④ Excel ファイルがこのフォルダ内に保存されます。
+
+【出力について】
+- ファイル名・フォルダ名から簿記の6分類（①資産／②負債／③資本／④収益／⑤費用／⑥その他）を自動推定します。
+- 「分類」列は Excel でドロップダウンから選び直せます（事後的に変更可能）。
+
+***実行時のメッセージ例***
+取得件数: 67 件
+Excelを保存しました: （対象フォルダ）\folder_structure_日時.xlsx
