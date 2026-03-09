@@ -113,7 +113,8 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" "https://your-project.vercel.ap
 
 ## 注意事項
 
-- **監視対象**: USD/JPY, EUR/JPY, AUD/JPY（＋ NIKKEI_SYMBOL 設定時は日経225）。**1時間足**で環境認識（20MAトレンド）、**押し率**は33%以内を理想・50%以上は通知対象外です。
+- **監視対象**: USD/JPY, EUR/JPY, AUD/JPY、日経225先物。**1時間足**で環境認識、**押し率**は33%以内を理想・50%以上は通知対象外。
+- **前日高値・安値**: 為替は **NY 基準**（America/New_York の日足）。**日経225先物**は **日中セッション終了 15:45 JST** 基準（09:00〜15:45 の15分足から算出）。
 - **Twelve Data**: 日足・15分足・1時間足を取得。SMA・SAR はアプリ内計算。1回の Cron は銘柄数 × 3 リクエスト（日足・15分・1h）。
 - **日経225先物**: シンボルはプロバイダにより異なります。`NIKKEI_SYMBOL` 未設定時は **N225, NIY, NK225, 1321** を順に試し、取得できたものを監視します。エラーになりやすい場合は **NIKKEI_SYMBOL** に有効なシンボルを直接指定するか、**NIKKEI_SYMBOL_CANDIDATES** で試す候補をカンマ区切りで指定してください。候補の確認はプロジェクトルートで `python -c "from api.cron import search_symbol_candidates, check_symbol_available; import os; k=os.environ.get('TWELVE_DATA_API_KEY',''); print(search_symbol_candidates(k,'nikkei')); print('N225 ok:', check_symbol_available(k,'N225'))"` のように実行できます。
 - 重複通知の防止は「同一 Cron 実行内で同一銘柄・同一方向は1回まで」です。日をまたぐ重複を防ぐには Vercel KV 等の永続ストアの利用を検討してください（仕様書に記載）。

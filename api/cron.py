@@ -10,7 +10,7 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
 
@@ -50,6 +50,44 @@ def get_daily_ohlc(api_key: str, symbol: str) -> list:
     if "values" not in data:
         raise ValueError(f"No values in daily response for {symbol}: {data}")
     return data["values"]
+
+
+def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
+    """
+    日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
+    15分足を JST で取得し、該当セッションの max(high), min(low) を計算。
+    """
+    tz = ZoneInfo("Asia/Tokyo")
+    today = datetime.now(tz).date()
+    yesterday = today - timedelta(days=1)
+    start_str = f"{yesterday.isoformat()}T09:00:00"
+    end_str = f"{yesterday.isoformat()}T15:45:00"
+    try:
+        r = requests.get(
+            f"{BASE_URL}/time_series",
+            params={
+                "symbol": symbol,
+                "interval": INTERVAL_15,
+                "start_date": start_str,
+                "end_date": end_str,
+                "timezone": "Asia/Tokyo",
+                "apikey": api_key,
+                "format": "JSON",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        values = data.get("values") or []
+        if not values:
+            return (None, None)
+        highs = [float_or(b.get("high"), 0) for b in values if float_or(b.get("high"), 0) > 0]
+        lows = [float_or(b.get("low"), 0) for b in values if float_or(b.get("low"), 0) > 0]
+        if not highs or not lows:
+            return (None, None)
+        return (max(highs), min(lows))
+    except Exception:
+        return (None, None)
 
 
 def get_15min_ohlc(api_key: str, symbol: str) -> list:
@@ -300,23 +338,27 @@ def previous_day_from_daily(daily_values: list) -> dict | None:
     return daily_values[1]
 
 
-def evaluate_symbol(api_key: str, symbol: str, label: str) -> list:
+def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545: bool = False) -> list:
     """
     1銘柄について条件を評価し、成立したアラートのリストを返す。
-    15分足: 20MA, SAR, 押し率。1時間足: 環境認識（20MAトレンド）。50%以上押しは除外。
+    use_jst_session_1545=True のとき前日高値・安値は JST 日中セッション（09:00〜15:45）基準。
     """
-    daily = get_daily_ohlc(api_key, symbol)
+    if use_jst_session_1545:
+        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
+        if prev_high is None or prev_low is None or prev_high <= 0 or prev_low <= 0:
+            return []
+    else:
+        daily = get_daily_ohlc(api_key, symbol)
+        prev_day = previous_day_from_daily(daily)
+        if not prev_day:
+            return []
+        prev_high = float_or(prev_day.get("high"), 0)
+        prev_low = float_or(prev_day.get("low"), 0)
+        if prev_high <= 0 or prev_low <= 0:
+            return []
+
     ohlc_15 = get_15min_ohlc(api_key, symbol)
     ohlc_1h = get_1h_ohlc(api_key, symbol)
-
-    prev_day = previous_day_from_daily(daily)
-    if not prev_day:
-        return []
-
-    prev_high = float_or(prev_day.get("high"), 0)
-    prev_low = float_or(prev_day.get("low"), 0)
-    if prev_high <= 0 or prev_low <= 0:
-        return []
 
     bar = last_closed_bar(ohlc_15)
     if not bar:
@@ -488,27 +530,27 @@ def run_checks() -> dict:
     if not api_key:
         return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
 
-    symbols = [
-        ("USD/JPY", "USD/JPY"),
-        ("EUR/JPY", "EUR/JPY"),
-        ("AUD/JPY", "AUD/JPY"),
+    symbols: list[tuple[str, str, bool]] = [
+        ("USD/JPY", "USD/JPY", False),
+        ("EUR/JPY", "EUR/JPY", False),
+        ("AUD/JPY", "AUD/JPY", False),
     ]
     nikkei_explicit = get_env("NIKKEI_SYMBOL")
     if nikkei_explicit:
         if nikkei_explicit.upper() != "N225" and check_symbol_available(api_key, nikkei_explicit):
-            symbols.append((nikkei_explicit, "日経225先物"))
+            symbols.append((nikkei_explicit, "日経225先物", True))
     else:
         resolved = resolve_nikkei_symbol(api_key)
         if resolved:
-            symbols.append((resolved, "日経225先物"))
+            symbols.append((resolved, "日経225先物", True))
 
     sent = 0
     seen = set()  # 同一実行内の重複防止: (symbol, direction)
     errors = []
 
-    for symbol, label in symbols:
+    for symbol, label, use_jst_1545 in symbols:
         try:
-            alerts = evaluate_symbol(api_key, symbol, label)
+            alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
             for a in alerts:
                 key = (a["symbol"], a["direction"])
                 if key in seen:
