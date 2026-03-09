@@ -7,6 +7,8 @@ import os
 import json
 import smtplib
 import ssl
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
@@ -258,6 +260,20 @@ def evaluate_symbol(api_key: str, symbol: str, label: str) -> list:
     return alerts
 
 
+def _datetime_to_jst(dt_str: str) -> str:
+    """API の日時文字列（UTC 想定）を日本時間（JST）で返す。パースに失敗したらそのまま返す。"""
+    if not dt_str:
+        return dt_str
+    s = dt_str.strip()[:19]
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        utc = dt.replace(tzinfo=ZoneInfo("UTC"))
+        jst = utc.astimezone(ZoneInfo("Asia/Tokyo"))
+        return jst.strftime("%Y-%m-%d %H:%M:%S JST")
+    except (ValueError, TypeError):
+        return dt_str
+
+
 def send_alert_email(alert: dict) -> None:
     """1件のアラートをメール送信。"""
     from_addr = get_env("ALERT_MAIL_FROM")
@@ -270,13 +286,14 @@ def send_alert_email(alert: dict) -> None:
     if not all([from_addr, to_addr, smtp_host, smtp_port, smtp_user, smtp_pass]):
         return
 
+    dt_display = _datetime_to_jst(alert.get("datetime", ""))
     direction_ja = "前日高値ブレイク（ロング）" if alert["direction"] == "long" else "前日安値ブレイク（ショート）"
-    subject = f"[相場アラート] {alert['label']} {direction_ja} - {alert['datetime']}"
+    subject = f"[相場アラート] {alert['label']} {direction_ja} - {dt_display}"
 
     body = f"""
 銘柄: {alert['label']} ({alert['symbol']})
 方向: {direction_ja}
-条件成立時刻: {alert['datetime']}
+条件成立時刻: {dt_display}
 
 終値: {alert['close']}
 前日高値: {alert['prev_high']}
