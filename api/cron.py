@@ -10,13 +10,21 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import requests
 
 BASE_URL = "https://api.twelvedata.com"
 INTERVAL_15 = "15min"
+INTERVAL_1H = "1h"
 INTERVAL_DAY = "1day"
 OUTPUTSIZE_15 = 30
+OUTPUTSIZE_1H = 25
 OUTPUTSIZE_DAY = 3
+
+# 押し率: 50%以上は除外、33%以内を理想とする
+OSHIRITSU_EXCLUDE_PCT = 50.0
+OSHIRITSU_IDEAL_PCT = 33.0
 
 
 def get_env(name: str, default: str = "") -> str:
@@ -63,6 +71,52 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
     if "values" not in data:
         raise ValueError(f"No values in 15min response for {symbol}: {data}")
     return data["values"]
+
+
+def get_1h_ohlc(api_key: str, symbol: str) -> list:
+    """1時間足を取得（直近25本、新しい順）。日本時間で返す。"""
+    r = requests.get(
+        f"{BASE_URL}/time_series",
+        params={
+            "symbol": symbol,
+            "interval": INTERVAL_1H,
+            "outputsize": OUTPUTSIZE_1H,
+            "timezone": "Asia/Tokyo",
+            "apikey": api_key,
+            "format": "JSON",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if "values" not in data:
+        raise ValueError(f"No values in 1h response for {symbol}: {data}")
+    return data["values"]
+
+
+def load_settings() -> dict:
+    """settings.json を読み、監視時間などを返す。"""
+    try:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(base, "settings.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"monitor": {"start_jst": "00:00", "end_jst": "23:59"}}
+
+
+def is_within_monitor_window(settings: dict) -> bool:
+    """現在時刻（JST）が監視時間内か。"""
+    tz = ZoneInfo("Asia/Tokyo")
+    now = datetime.now(tz).strftime("%H:%M")
+    mon = settings.get("monitor", {})
+    start = mon.get("start_jst", "00:00")
+    end = mon.get("end_jst", "23:59")
+    if start <= end:
+        return start <= now <= end
+    return now >= start or now <= end
 
 
 # --- アプリ内計算: SMA と パラボリックSAR（Twelve Data の指標APIを使わない） ---
@@ -187,11 +241,11 @@ def previous_day_from_daily(daily_values: list) -> dict | None:
 def evaluate_symbol(api_key: str, symbol: str, label: str) -> list:
     """
     1銘柄について条件を評価し、成立したアラートのリストを返す。
-    SMA と パラボリックSAR は15分足OHLCからアプリ内で計算（Twelve Data 指標APIは使わない）。
-    戻り値: [ {"direction": "long"|"short", "close": float, "prev_high": float, ...}, ... ]
+    15分足: 20MA, SAR, 押し率。1時間足: 環境認識（20MAトレンド）。50%以上押しは除外。
     """
     daily = get_daily_ohlc(api_key, symbol)
     ohlc_15 = get_15min_ohlc(api_key, symbol)
+    ohlc_1h = get_1h_ohlc(api_key, symbol)
 
     prev_day = previous_day_from_daily(daily)
     if not prev_day:
@@ -208,54 +262,79 @@ def evaluate_symbol(api_key: str, symbol: str, label: str) -> list:
 
     bar_dt = bar.get("datetime", "")
     close = float_or(bar.get("close"), 0)
+    bar_high = float_or(bar.get("high"), 0)
+    bar_low = float_or(bar.get("low"), 0)
     if close <= 0:
         return []
 
-    # 15分足は新しい順 → 終値リスト（新しい順）
+    # 15分足 20MA
     close_prices = [float_or(b.get("close"), 0) for b in ohlc_15]
     sma_list = calc_sma(close_prices, 20)
-    # 直近確定足 = インデックス 1 のSMA
     ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
 
-    # パラボリックSAR: 時系列は古い順で渡す
+    # 15分足 パラボリックSAR
     ohlc_oldest_first = list(reversed(ohlc_15))
     highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
     lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
     closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
     sar_list = calc_parabolic_sar(highs, lows, closes_asc)
-    # 直近確定足 = 新しい順で2本目 → 古い順では (n-2) 番目
     idx_last_closed = len(sar_list) - 2
     sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
 
+    # 1時間足 環境認識（直近確定1h足: 終値 vs 20MA）
+    closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
+    sma_1h = calc_sma(closes_1h, 20)
+    bar_1h = last_closed_bar(ohlc_1h)
+    close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
+    ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
+    trend_1h_up = close_1h > ma20_1h and ma20_1h > 0
+    trend_1h_down = close_1h < ma20_1h and ma20_1h > 0
+
     alerts = []
 
-    # 前日高値ブレイク + 終値 > 20MA + 終値 > SAR → ロング
-    if close > prev_high and ma20 > 0 and close > ma20 and (sar_val <= 0 or close > sar_val):
-        alerts.append({
-            "direction": "long",
-            "symbol": symbol,
-            "label": label,
-            "close": close,
-            "prev_high": prev_high,
-            "prev_low": prev_low,
-            "ma20": ma20,
-            "sar": sar_val,
-            "datetime": bar_dt,
-        })
+    # ロング: 前日高値ブレイク + 15分20MA + SAR + 1h上昇環境 + 押し率50%未満
+    if close > prev_high and ma20 > 0 and close > ma20 and (sar_val <= 0 or close > sar_val) and trend_1h_up:
+        denom = bar_high - prev_high
+        oshiritsu_pct = ((bar_high - close) / denom * 100.0) if denom > 0 else 0.0
+        if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
+            pass
+        else:
+            alerts.append({
+                "direction": "long",
+                "symbol": symbol,
+                "label": label,
+                "close": close,
+                "prev_high": prev_high,
+                "prev_low": prev_low,
+                "ma20": ma20,
+                "sar": sar_val,
+                "datetime": bar_dt,
+                "oshiritsu_pct": round(oshiritsu_pct, 1),
+                "ma20_1h": ma20_1h,
+                "close_1h": close_1h,
+            })
 
-    # 前日安値ブレイク + 終値 < 20MA + 終値 < SAR → ショート
-    if close < prev_low and ma20 > 0 and close < ma20 and (sar_val <= 0 or close < sar_val):
-        alerts.append({
-            "direction": "short",
-            "symbol": symbol,
-            "label": label,
-            "close": close,
-            "prev_high": prev_high,
-            "prev_low": prev_low,
-            "ma20": ma20,
-            "sar": sar_val,
-            "datetime": bar_dt,
-        })
+    # ショート: 前日安値ブレイク + 15分20MA + SAR + 1h下降環境 + 押し率50%未満
+    if close < prev_low and ma20 > 0 and close < ma20 and (sar_val <= 0 or close < sar_val) and trend_1h_down:
+        denom = prev_low - bar_low
+        oshiritsu_pct = ((close - bar_low) / denom * 100.0) if denom > 0 else 0.0
+        if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
+            pass
+        else:
+            alerts.append({
+                "direction": "short",
+                "symbol": symbol,
+                "label": label,
+                "close": close,
+                "prev_high": prev_high,
+                "prev_low": prev_low,
+                "ma20": ma20,
+                "sar": sar_val,
+                "datetime": bar_dt,
+                "oshiritsu_pct": round(oshiritsu_pct, 1),
+                "ma20_1h": ma20_1h,
+                "close_1h": close_1h,
+            })
 
     return alerts
 
@@ -284,16 +363,40 @@ def send_alert_email(alert: dict) -> None:
     direction_ja = "前日高値ブレイク（ロング）" if alert["direction"] == "long" else "前日安値ブレイク（ショート）"
     subject = f"[相場アラート] {alert['label']} {direction_ja} - {dt_display}"
 
-    body = f"""
-銘柄: {alert['label']} ({alert['symbol']})
-方向: {direction_ja}
-条件成立時刻: {dt_display}
+    oshi = alert.get("oshiritsu_pct")
+    oshi_note = f"（理想: {OSHIRITSU_IDEAL_PCT}%以内）" if (oshi is not None and oshi <= OSHIRITSU_IDEAL_PCT) else ""
 
-終値: {alert['close']}
-前日高値: {alert['prev_high']}
-前日安値: {alert['prev_low']}
-15分足20MA: {alert['ma20']}
-パラボリックSAR: {alert['sar']}
+    body = f"""
+━━━━━━━━━━━━━━━━━━━━━━
+  相場監視アラート
+━━━━━━━━━━━━━━━━━━━━━━
+
+【銘柄】 {alert['label']} ({alert['symbol']})
+【方向】 {direction_ja}
+【条件成立時刻】 {dt_display}
+
+────────────────────
+  15分足
+────────────────────
+  終値        : {alert['close']}
+  20MA        : {alert['ma20']}
+  パラボリックSAR : {alert['sar']}
+
+────────────────────
+  前日（NY基準）
+────────────────────
+  前日高値    : {alert['prev_high']}
+  前日安値    : {alert['prev_low']}
+
+────────────────────
+  1時間足（環境認識）
+────────────────────
+  終値        : {alert.get('close_1h', '-')}
+  20MA        : {alert.get('ma20_1h', '-')}
+
+────────────────────
+  押し率      : {oshi if oshi is not None else '-'}% {oshi_note}
+────────────────────
 
 ※ 自動売買は行いません。判断はご自身でお願いします。
 """.strip()
@@ -314,12 +417,20 @@ def send_alert_email(alert: dict) -> None:
 
 
 def run_checks() -> dict:
-    """全銘柄をチェックし、送信したアラート数とエラーを返す。"""
+    """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はスキップ。"""
+    settings = load_settings()
+    if not is_within_monitor_window(settings):
+        return {"ok": True, "sent": 0, "error": None, "skipped": ["outside monitor window (settings.json)"]}
+
     api_key = get_env("TWELVE_DATA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
 
-    symbols = [("USD/JPY", "USD/JPY")]
+    symbols = [
+        ("USD/JPY", "USD/JPY"),
+        ("EUR/JPY", "EUR/JPY"),
+        ("AUD/JPY", "AUD/JPY"),
+    ]
     nikkei = get_env("NIKKEI_SYMBOL")
     if nikkei and nikkei.upper() != "N225":
         symbols.append((nikkei, "日経225先物"))

@@ -1,6 +1,6 @@
 # 相場監視アラートツール（Vercel + Twelve Data）
 
-USD/JPY と 日経225先物 を15分ごとに監視し、**前日高値ブレイク** または **前日安値ブレイク** かつ **15分足20MA** と **パラボリックSAR** の条件を満たしたときにメールで通知します。自動売買は行いません。
+**USD/JPY・EUR/JPY・AUD/JPY**（およびオプションで日経225）を15分ごとに監視し、**前日高値/安値ブレイク** かつ **15分足20MA・パラボリックSAR** に加え、**1時間足の環境認識** と **押し率50%未満** を満たしたときにメールで通知します。監視時間は `settings.json` で変更可能です。自動売買は行いません。
 
 - 仕様の詳細は [docs/SPEC.md](docs/SPEC.md) を参照してください。
 
@@ -83,18 +83,37 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" "https://your-project.vercel.ap
 
 成功時は `{"ok": true, "sent": 0}` のような JSON が返ります。条件が成立していると `sent` が 1 以上になります。
 
+## 監視時間（settings.json）
+
+ルートの **`settings.json`** で、監視を行う時間帯（日本時間）を指定できます。この時間外は条件判定をスキップします。
+
+```json
+{
+  "monitor": {
+    "start_jst": "09:00",
+    "end_jst": "23:59"
+  }
+}
+```
+
+- `start_jst` … 監視開始時刻（JST、`"HH:MM"`）
+- `end_jst` … 監視終了時刻（JST、`"HH:MM"`）  
+  ※ 例: 9時～翌2時なら `"start_jst": "09:00"`, `"end_jst": "02:00"`（翌日跨ぎ対応）
+
 ## ファイル構成
 
 | ファイル | 説明 |
 |----------|------|
 | `api/cron.py` | Cron エンドポイント。Twelve Data 取得・条件判定・メール送信。 |
-| `vercel.json` | Cron スケジュール `*/15 * * * *` と Python ランタイム設定。 |
+| `settings.json` | 監視時間（`monitor.start_jst` / `end_jst`）の設定。 |
+| `vercel.json` | Cron スケジュール `*/15 * * * *`。 |
 | `requirements.txt` | Python 依存（`requests`）。 |
 | `docs/SPEC.md` | 仕様書。 |
 
 ## 注意事項
 
-- **Twelve Data** は時系列（日足・15分足）のみ使用。SMA と パラボリックSAR はアプリ内で計算するため、1回の Cron は「銘柄数 × 2」リクエストのみです。
+- **監視対象**: USD/JPY, EUR/JPY, AUD/JPY（＋ NIKKEI_SYMBOL 設定時は日経225）。**1時間足**で環境認識（20MAトレンド）、**押し率**は33%以内を理想・50%以上は通知対象外です。
+- **Twelve Data**: 日足・15分足・1時間足を取得。SMA・SAR はアプリ内計算。1回の Cron は銘柄数 × 3 リクエスト（日足・15分・1h）。
 - **日経225**: Twelve Data では `N225` は無効（404）です。`NIKKEI_SYMBOL` を**未設定のまま**にすると USD/JPY のみ監視します。日経を監視したい場合は [Twelve Data のシンボル検索](https://twelvedata.com/docs#symbol-search) で有効なシンボルを確認し、設定してください。
 - 重複通知の防止は「同一 Cron 実行内で同一銘柄・同一方向は1回まで」です。日をまたぐ重複を防ぐには Vercel KV 等の永続ストアの利用を検討してください（仕様書に記載）。
 
