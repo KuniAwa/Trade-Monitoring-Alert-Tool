@@ -520,6 +520,167 @@ def send_alert_email(alert: dict) -> None:
         server.sendmail(from_addr, [to_addr], msg.as_string())
 
 
+def should_send_daily_summary() -> tuple[bool, str]:
+    """
+    平日かつ JST 12:00 / 21:00 時台の Cron 実行かどうかを判定。
+    戻り値: (送信すべきか, 表示用の現在時刻 JST 文字列)
+    """
+    tz = ZoneInfo("Asia/Tokyo")
+    now = datetime.now(tz)
+    # weekday: 0=Mon,6=Sun → 平日のみ
+    if now.weekday() > 4:
+        return (False, "")
+    hm = now.strftime("%H:%M")
+    if hm not in {"12:00", "21:00"}:
+        return (False, "")
+    return (True, now.strftime("%Y-%m-%d %H:%M JST"))
+
+
+def build_snapshot(
+    api_key: str,
+    symbol: str,
+    label: str,
+    use_jst_session_1545: bool,
+) -> dict | None:
+    """
+    サマリーメール用に1銘柄分のスナップショットを構築。
+    アラート条件には関係なく、現在の状態をそのまま返す。
+    """
+    # 前日高値・安値
+    if use_jst_session_1545:
+        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
+        if prev_high is None or prev_low is None:
+            return None
+    else:
+        daily = get_daily_ohlc(api_key, symbol)
+        prev_day = previous_day_from_daily(daily)
+        if not prev_day:
+            return None
+        prev_high = float_or(prev_day.get("high"), 0)
+        prev_low = float_or(prev_day.get("low"), 0)
+        if prev_high <= 0 or prev_low <= 0:
+            return None
+
+    # 15分足・1時間足
+    ohlc_15 = get_15min_ohlc(api_key, symbol)
+    ohlc_1h = get_1h_ohlc(api_key, symbol)
+    bar = last_closed_bar(ohlc_15)
+    if not bar:
+        return None
+    bar_dt = bar.get("datetime", "")
+    close = float_or(bar.get("close"), 0)
+    if close <= 0:
+        return None
+
+    # 15分足 20MA
+    close_prices = [float_or(b.get("close"), 0) for b in ohlc_15]
+    sma_list = calc_sma(close_prices, 20)
+    ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
+
+    # 15分足 SAR
+    ohlc_oldest_first = list(reversed(ohlc_15))
+    highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
+    lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
+    closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
+    sar_list = calc_parabolic_sar(highs, lows, closes_asc)
+    idx_last_closed = len(sar_list) - 2
+    sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
+
+    # 1時間足 20MA
+    closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
+    sma_1h = calc_sma(closes_1h, 20)
+    bar_1h = last_closed_bar(ohlc_1h)
+    close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
+    ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
+
+    # 押し率（ロング方向想定で算出。ショート側は参考値として同一式は使わない）
+    bar_high = float_or(bar.get("high"), 0)
+    bar_low = float_or(bar.get("low"), 0)
+    oshiritsu_long = None
+    if bar_high > prev_high:
+        denom = bar_high - prev_high
+        oshiritsu_long = ((bar_high - close) / denom * 100.0) if denom > 0 else 0.0
+
+    return {
+        "symbol": symbol,
+        "label": label,
+        "datetime": bar_dt,
+        "close": close,
+        "prev_high": prev_high,
+        "prev_low": prev_low,
+        "ma20_15m": ma20,
+        "sar_15m": sar_val,
+        "close_1h": close_1h,
+        "ma20_1h": ma20_1h,
+        "oshiritsu_long": round(oshiritsu_long, 1) if oshiritsu_long is not None else None,
+    }
+
+
+def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
+    """1日2回のサマリーメールを送信。"""
+    from_addr = get_env("ALERT_MAIL_FROM")
+    to_addr = get_env("ALERT_MAIL_TO")
+    smtp_host = get_env("SMTP_HOST")
+    smtp_port = get_env("SMTP_PORT")
+    smtp_user = get_env("SMTP_USER")
+    smtp_pass = get_env("SMTP_PASSWORD")
+
+    if not all([from_addr, to_addr, smtp_host, smtp_port, smtp_user, smtp_pass]):
+        return
+
+    subject = f"[相場サマリー] 4銘柄定時レポート - {now_jst_str}"
+
+    lines: list[str] = []
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("  相場サマリー（定時レポート）")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"【時刻】 {now_jst_str}")
+    lines.append("")
+
+    for snap in snapshots:
+        dt_display = _format_datetime_display(snap.get("datetime", ""))
+        lines.append("────────────────────")
+        lines.append(f"  {snap['label']} ({snap['symbol']})")
+        lines.append("────────────────────")
+        lines.append(f"  条件判定足時刻 : {dt_display}")
+        lines.append("")
+        lines.append("  15分足")
+        lines.append(f"    終値        : {snap['close']}")
+        lines.append(f"    20MA        : {snap['ma20_15m']}")
+        lines.append(f"    パラボリックSAR : {snap['sar_15m']}")
+        lines.append("")
+        lines.append("  前日")
+        lines.append(f"    前日高値    : {snap['prev_high']}")
+        lines.append(f"    前日安値    : {snap['prev_low']}")
+        lines.append("")
+        lines.append("  1時間足（環境認識）")
+        lines.append(f"    終値        : {snap['close_1h']}")
+        lines.append(f"    20MA        : {snap['ma20_1h']}")
+        lines.append("")
+        oshi = snap.get("oshiritsu_long")
+        lines.append("  押し率（ロング想定）")
+        lines.append(f"    押し率      : {oshi if oshi is not None else '-'}%")
+        lines.append("")
+
+    lines.append("※ このメールは通知専用です。自動売買は行いません。判断はご自身でお願いします。")
+
+    body = "\n".join(lines)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    port = int(smtp_port) if smtp_port.isdigit() else 587
+    context = ssl.create_default_context()
+    with smtplib.SMTP(smtp_host, port, timeout=15) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(from_addr, [to_addr], msg.as_string())
+
+
 def run_checks() -> dict:
     """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はスキップ。"""
     settings = load_settings()
@@ -561,6 +722,20 @@ def run_checks() -> dict:
         except Exception as e:
             errors.append(f"{symbol}: {str(e)[:200]}")
             continue
+
+    # 平日 12:00 / 21:00 JST にサマリーメールを送信
+    try:
+        should_send, now_jst_str = should_send_daily_summary()
+        if should_send:
+            snapshots: list[dict] = []
+            for symbol, label, use_jst_1545 in symbols:
+                snap = build_snapshot(api_key, symbol, label, use_jst_1545)
+                if snap:
+                    snapshots.append(snap)
+            if snapshots:
+                send_summary_email(snapshots, now_jst_str)
+    except Exception as e:
+        errors.append(f"summary: {str(e)[:200]}")
 
     if errors and sent == 0 and len(errors) == len(symbols):
         return {"ok": False, "error": "; ".join(errors), "sent": 0}

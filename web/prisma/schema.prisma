@@ -1,0 +1,106 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// NOTE: SQLite では Prisma の enum が使えないため、
+// 下記のように String カラムで表現します。
+// TypeScript 側で union 型として扱う想定です。
+
+model Case {
+  id                 String   @id @default(cuid())
+  title              String
+  topicLabel         String?
+  standard           String   @default("JGAAP") // "JGAAP" | "IFRS" | "BOTH"
+  transactionSummary String
+  initialQuestion    String
+
+  standardLinks     StandardLink[]
+  notebookSummaries NotebookSummary[]
+  searchResults     SearchResult[]
+  conversationTurns ConversationTurn[]
+  draftAnswers      DraftAnswer[]
+  feedbacks         Feedback[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StandardLink {
+  id        String @id @default(cuid())
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+
+  label     String?
+  url       String
+  standard  String @default("JGAAP") // "JGAAP" | "IFRS" | "BOTH"
+
+  createdAt DateTime @default(now())
+}
+
+model NotebookSummary {
+  id        String @id @default(cuid())
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model SearchResult {
+  id        String @id @default(cuid())
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+
+  query     String
+  title     String
+  snippet   String
+  url       String
+  source    String
+  rawJson   String?
+
+  createdAt DateTime @default(now())
+}
+
+model ConversationTurn {
+  id        String @id @default(cuid())
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+
+  role      String @default("USER")              // "USER" | "ASSISTANT" | "SYSTEM"
+  mode      String @default("FOLLOWUP_QUESTION") // "FOLLOWUP_QUESTION" | "DRAFT_ANSWER" | "FEEDBACK_REFINEMENT"
+  content   String
+
+  createdAt DateTime @default(now())
+}
+
+model DraftAnswer {
+  id        String   @id @default(cuid())
+  case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+
+  structuredAnswerJson String
+  summary              String?
+
+  feedbacks Feedback[] // Feedback との逆側のリレーション
+
+  createdAt DateTime @default(now())
+}
+
+model Feedback {
+  id      String @id @default(cuid())
+  case    Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId  String
+
+  draft   DraftAnswer? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  draftId String?
+
+  rating  String  @default("ADEQUATE") // "ADEQUATE" | "INSUFFICIENT" | "INCORRECT" | "RECONSIDER"
+  comment String?
+
+  createdAt DateTime @default(now())
+}

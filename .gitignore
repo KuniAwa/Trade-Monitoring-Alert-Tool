@@ -16,3 +16,12 @@ venv/
 # その他
 .DS_Store
 *.log
+
+# Node / Next.js (web フロントエンド)
+node_modules/
+.next/
+web/node_modules/
+web/.next/
+web/.turbo/
+web/.env.local
+
