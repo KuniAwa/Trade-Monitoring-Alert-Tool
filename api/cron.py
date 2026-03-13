@@ -522,7 +522,8 @@ def send_alert_email(alert: dict) -> None:
 
 def should_send_daily_summary() -> tuple[bool, str]:
     """
-    平日かつ JST 12:00 / 21:00 時台の Cron 実行かどうかを判定。
+    平日かつ JST 21:00 の Cron 実行かどうかを判定（1日1回のみ）。
+    21:00〜21:14 なら送信（Cron がずれても1回だけ送る）。
     戻り値: (送信すべきか, 表示用の現在時刻 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
@@ -531,7 +532,7 @@ def should_send_daily_summary() -> tuple[bool, str]:
     if now.weekday() > 4:
         return (False, "")
     hm = now.strftime("%H:%M")
-    if hm not in {"12:00", "21:00"}:
+    if not (hm >= "21:00" and hm < "21:15"):
         return (False, "")
     return (True, now.strftime("%Y-%m-%d %H:%M JST"))
 
@@ -617,7 +618,7 @@ def build_snapshot(
 
 
 def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
-    """1日2回のサマリーメールを送信。"""
+    """1日1回（21:00 JST）のサマリーメールを送信。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -723,17 +724,23 @@ def run_checks() -> dict:
             errors.append(f"{symbol}: {str(e)[:200]}")
             continue
 
-    # 平日 12:00 / 21:00 JST にサマリーメールを送信
+    # 平日 21:00 JST にサマリーメールを1日1回送信（銘柄ごとに例外を捕捉し1つ失敗しても他は送る）
     try:
         should_send, now_jst_str = should_send_daily_summary()
-        if should_send:
+        if should_send and now_jst_str:
             snapshots: list[dict] = []
             for symbol, label, use_jst_1545 in symbols:
-                snap = build_snapshot(api_key, symbol, label, use_jst_1545)
-                if snap:
-                    snapshots.append(snap)
+                try:
+                    snap = build_snapshot(api_key, symbol, label, use_jst_1545)
+                    if snap:
+                        snapshots.append(snap)
+                except Exception as e:
+                    errors.append(f"summary {symbol}: {str(e)[:150]}")
             if snapshots:
-                send_summary_email(snapshots, now_jst_str)
+                try:
+                    send_summary_email(snapshots, now_jst_str)
+                except Exception as e:
+                    errors.append(f"summary send: {str(e)[:150]}")
     except Exception as e:
         errors.append(f"summary: {str(e)[:200]}")
 
