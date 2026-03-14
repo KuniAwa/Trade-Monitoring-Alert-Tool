@@ -12,7 +12,11 @@ from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import time
 import requests
+
+# 停止中の銘柄（再開時は set から削除するのみ）
+SYMBOLS_DISABLED: set[str] = {"AUD/JPY"}
 
 BASE_URL = "https://api.twelvedata.com"
 INTERVAL_15 = "15min"
@@ -520,21 +524,24 @@ def send_alert_email(alert: dict) -> None:
         server.sendmail(from_addr, [to_addr], msg.as_string())
 
 
-def should_send_daily_summary() -> tuple[bool, str]:
+def should_send_daily_summary() -> tuple[bool, str | None, str]:
     """
-    平日かつ JST 06:00 の Cron 実行かどうかを判定（1日1回のみ）。
-    06:00〜06:14 なら送信（Cron がずれても1回だけ送る）。
-    戻り値: (送信すべきか, 表示用の現在時刻 JST 文字列)
+    平日のサマリー送信タイミングを判定。
+    - 24:00 JST (00:00〜00:14): 日経225のみ → ("nikkei", now_str)
+    - 07:00 JST (07:00〜07:14): USD/JPY, EUR/JPY のみ → ("fx", now_str)
+    戻り値: (送信するか, グループ "nikkei"|"fx"|None, 表示用 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
     now = datetime.now(tz)
-    # weekday: 0=月, 6=日 → 平日のみ
     if now.weekday() > 4:
-        return (False, "")
+        return (False, None, "")
     hm = now.strftime("%H:%M")
-    if not (hm >= "06:00" and hm < "06:15"):
-        return (False, "")
-    return (True, now.strftime("%Y-%m-%d %H:%M JST"))
+    now_str = now.strftime("%Y-%m-%d %H:%M JST")
+    if hm >= "00:00" and hm < "00:15":
+        return (True, "nikkei", now_str)
+    if hm >= "07:00" and hm < "07:15":
+        return (True, "fx", now_str)
+    return (False, None, "")
 
 
 def build_snapshot(
@@ -618,7 +625,7 @@ def build_snapshot(
 
 
 def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
-    """平日 1日1回（06:00 JST）のサマリーメールを送信。"""
+    """平日のサマリーメール送信（24:00=日経のみ / 07:00=USD,EUR）。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -629,7 +636,7 @@ def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
     if not all([from_addr, to_addr, smtp_host, smtp_port, smtp_user, smtp_pass]):
         return
 
-    subject = f"[相場サマリー] 4銘柄定時レポート - {now_jst_str}"
+    subject = f"[相場サマリー] {len(snapshots)}銘柄定時レポート - {now_jst_str}"
 
     lines: list[str] = []
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -683,16 +690,12 @@ def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
 
 
 def run_checks() -> dict:
-    """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はスキップ。"""
+    """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はアラートのみスキップ。"""
     settings = load_settings()
-    if not is_within_monitor_window(settings):
-        return {"ok": True, "sent": 0, "error": None, "skipped": ["outside monitor window (settings.json)"]}
-
     api_key = get_env("TWELVE_DATA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
 
-    # 週末はアラート・サマリーともに送信しない（平日のみ）
     tz = ZoneInfo("Asia/Tokyo")
     if datetime.now(tz).weekday() > 4:
         return {"ok": True, "sent": 0, "error": None, "skipped": ["weekend (alerts and summary disabled)"]}
@@ -711,30 +714,49 @@ def run_checks() -> dict:
         if resolved:
             symbols.append((resolved, "日経225先物", True))
 
+    symbols = [s for s in symbols if s[0] not in SYMBOLS_DISABLED]
+
     sent = 0
-    seen = set()  # 同一実行内の重複防止: (symbol, direction)
-    errors = []
+    seen: set[tuple[str, str]] = set()
+    errors: list[str] = []
+    within_window = is_within_monitor_window(settings)
 
-    for symbol, label, use_jst_1545 in symbols:
-        try:
-            alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
-            for a in alerts:
-                key = (a["symbol"], a["direction"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                send_alert_email(a)
-                sent += 1
-        except Exception as e:
-            errors.append(f"{symbol}: {str(e)[:200]}")
-            continue
+    if within_window:
+        symbols_fx = [s for s in symbols if not s[2]]
+        symbols_nikkei = [s for s in symbols if s[2]]
+        for symbol, label, use_jst_1545 in symbols_fx:
+            try:
+                alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
+                for a in alerts:
+                    key = (a["symbol"], a["direction"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    send_alert_email(a)
+                    sent += 1
+            except Exception as e:
+                errors.append(f"{symbol}: {str(e)[:200]}")
+        if symbols_nikkei:
+            time.sleep(61)
+        for symbol, label, use_jst_1545 in symbols_nikkei:
+            try:
+                alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
+                for a in alerts:
+                    key = (a["symbol"], a["direction"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    send_alert_email(a)
+                    sent += 1
+            except Exception as e:
+                errors.append(f"{symbol}: {str(e)[:200]}")
 
-    # 平日 06:00 JST にサマリーメールを1日1回送信（銘柄ごとに例外を捕捉し1つ失敗しても他は送る）
     try:
-        should_send, now_jst_str = should_send_daily_summary()
-        if should_send and now_jst_str:
+        should_send, group, now_jst_str = should_send_daily_summary()
+        if should_send and group and now_jst_str:
+            summary_symbols = [s for s in symbols if s[2]] if group == "nikkei" else [s for s in symbols if not s[2]]
             snapshots: list[dict] = []
-            for symbol, label, use_jst_1545 in symbols:
+            for symbol, label, use_jst_1545 in summary_symbols:
                 try:
                     snap = build_snapshot(api_key, symbol, label, use_jst_1545)
                     if snap:
