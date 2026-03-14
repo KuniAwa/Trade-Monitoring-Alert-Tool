@@ -522,12 +522,15 @@ def send_alert_email(alert: dict) -> None:
 
 def should_send_daily_summary() -> tuple[bool, str]:
     """
-    毎日 JST 06:00 の Cron 実行かどうかを判定（1日1回のみ）。
+    平日かつ JST 06:00 の Cron 実行かどうかを判定（1日1回のみ）。
     06:00〜06:14 なら送信（Cron がずれても1回だけ送る）。
     戻り値: (送信すべきか, 表示用の現在時刻 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
     now = datetime.now(tz)
+    # weekday: 0=月, 6=日 → 平日のみ
+    if now.weekday() > 4:
+        return (False, "")
     hm = now.strftime("%H:%M")
     if not (hm >= "06:00" and hm < "06:15"):
         return (False, "")
@@ -615,7 +618,7 @@ def build_snapshot(
 
 
 def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
-    """1日1回（06:00 JST）のサマリーメールを送信。"""
+    """平日 1日1回（06:00 JST）のサマリーメールを送信。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -689,6 +692,11 @@ def run_checks() -> dict:
     if not api_key:
         return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
 
+    # 週末はアラート・サマリーともに送信しない（平日のみ）
+    tz = ZoneInfo("Asia/Tokyo")
+    if datetime.now(tz).weekday() > 4:
+        return {"ok": True, "sent": 0, "error": None, "skipped": ["weekend (alerts and summary disabled)"]}
+
     symbols: list[tuple[str, str, bool]] = [
         ("USD/JPY", "USD/JPY", False),
         ("EUR/JPY", "EUR/JPY", False),
@@ -721,7 +729,7 @@ def run_checks() -> dict:
             errors.append(f"{symbol}: {str(e)[:200]}")
             continue
 
-    # 毎日 06:00 JST にサマリーメールを1日1回送信（銘柄ごとに例外を捕捉し1つ失敗しても他は送る）
+    # 平日 06:00 JST にサマリーメールを1日1回送信（銘柄ごとに例外を捕捉し1つ失敗しても他は送る）
     try:
         should_send, now_jst_str = should_send_daily_summary()
         if should_send and now_jst_str:
