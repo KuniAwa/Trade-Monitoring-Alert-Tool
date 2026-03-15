@@ -16,8 +16,13 @@
   - `cases/new/page.tsx` … 新規ケース作成
   - `cases/[id]/page.tsx` … ケース詳細（Q&A / 検索 / 回答案 / フィードバック）
   - `history/page.tsx` … 過去ケース一覧
+  - `summaries/page.tsx` … 要約ライブラリ一覧
   - `settings/page.tsx` … 利用方法・注意事項・免責
-  - `api/perplexity/search/route.ts` … Perplexity検索API（将来のクライアント直呼び出し用）
+  - `api/perplexity/search/route.ts` … Perplexity検索API
+  - `api/summaries/route.ts` … 要約一覧取得API
+  - `api/summaries/[id]/route.ts` … 要約1件取得API
+- `src/components/`
+  - `SummarySelectorClient.tsx` … 保存済み要約選択（クライアント）
 - `prisma/schema.prisma` … DBスキーマ
 - `src/lib/`
   - `prisma.ts` … Prismaクライアント
@@ -63,6 +68,12 @@
   - 回答案に対して「妥当 / 不足 / 誤り / 要再検討」の評価とコメントを保存
   - 最新の `DraftAnswer` に紐づく `Feedback` としてDB保存
   - プロンプトモード3（フィードバック反映再生成）の設計済み（将来、改訂版回答案生成に利用可能）
+
+- **要約ライブラリ（MVP）**
+  - **要約保存**: ケース作成画面のNotebookLM要約欄の下「この要約をライブラリに保存」で、タイトル・論点ラベル・framework・内容・会計基準リンクを `SummaryLibrary` に保存
+  - **要約一覧**: `/summaries` で保存済み要約を一覧（title, topicLabel, framework, updatedAt）、更新日降順
+  - **要約選択**: ケース作成画面で「保存済み要約から選択」ドロップダウンで選択すると、要約内容・会計基準リンク・ケース名・論点・基準がフォームに反映
+  - **ケースへコピー**: 選択した要約はライブラリを直接参照せず、ケース作成時に `CaseSummary` としてスナップショット保存し、既存の `NotebookSummary` にも内容を保存（過去ケースの前提が変わらない）
 
 ---
 
@@ -143,6 +154,30 @@
    - Output Directory: `.next`（Next.js デフォルト）
 
 4. Deploy を実行
+
+---
+
+## テスト手順（要約ライブラリ）
+
+1. **要約保存**
+   - 新規ケース作成画面を開く。
+   - ケース名・論点ラベル・会計基準・会計基準リンク・NotebookLM要約欄に任意の内容を入力。
+   - 「この要約をライブラリに保存」をクリック。
+   - `/summaries` にリダイレクトし、一覧に 1 件表示されることを確認。
+
+2. **要約一覧**
+   - サイドナビの「要約ライブラリ」または `/summaries` を開く。
+   - title / topicLabel / framework / updatedAt が表示され、更新日降順であることを確認。
+
+3. **要約選択**
+   - 新規ケース作成画面を開く。
+   - 「保存済み要約から選択」で先ほど保存した要約を選択する。
+   - NotebookLM要約・会計基準リンク・ケース名・論点ラベル・会計基準がフォームに反映されることを確認。
+
+4. **ケースへコピー**
+   - 上記のまま（または要約選択後に取引概要・最初の質問を入力し）「ケースを作成」をクリック。
+   - ケース詳細で、NotebookLM要約が表示されることを確認。
+   - DB 上で、該当ケースに `NotebookSummary` と（ライブラリから選択していた場合）`CaseSummary` が 1 件ずつ存在することを確認（Prisma Studio などで確認可能）。
 
 ---
 

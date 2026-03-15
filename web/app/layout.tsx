@@ -38,6 +38,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 過去ケース一覧
               </a>
               <a
+                href="/summaries"
+                className="block rounded px-3 py-2 hover:bg-slate-100"
+              >
+                要約ライブラリ
+              </a>
+              <a
                 href="/settings"
                 className="block rounded px-3 py-2 hover:bg-slate-100"
               >

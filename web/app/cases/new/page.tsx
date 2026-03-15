@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { SummarySelectorClient } from "@/components/SummarySelectorClient";
 
 async function createCase(formData: FormData) {
   "use server";
@@ -12,6 +13,7 @@ async function createCase(formData: FormData) {
   const initialQuestion = String(formData.get("initialQuestion") ?? "").trim();
   const standardLinksRaw = String(formData.get("standardLinks") ?? "");
   const notebookSummary = String(formData.get("notebookSummary") ?? "").trim();
+  const selectedLibrarySummaryId = String(formData.get("selectedLibrarySummaryId") ?? "").trim();
 
   if (!title || !transactionSummary || !initialQuestion) {
     throw new Error("ケース名・取引概要・最初の質問は必須です。");
@@ -21,19 +23,17 @@ async function createCase(formData: FormData) {
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+  const framework = standard === "IFRS" ? "IFRS" : standard === "BOTH" ? "BOTH" : "JGAAP";
 
   const created = await prisma.case.create({
     data: {
       title,
       topicLabel,
-      standard: standard === "IFRS" ? "IFRS" : standard === "BOTH" ? "BOTH" : "JGAAP",
+      standard: framework,
       transactionSummary,
       initialQuestion,
       standardLinks: {
-        create: links.map((url) => ({
-          url,
-          standard: standard === "IFRS" ? "IFRS" : standard === "BOTH" ? "BOTH" : "JGAAP"
-        }))
+        create: links.map((url) => ({ url, standard: framework }))
       },
       notebookSummaries: notebookSummary
         ? {
@@ -45,12 +45,62 @@ async function createCase(formData: FormData) {
     }
   });
 
+  if (selectedLibrarySummaryId) {
+    const lib = await prisma.summaryLibrary.findUnique({
+      where: { id: selectedLibrarySummaryId }
+    });
+    if (lib) {
+      await prisma.caseSummary.create({
+        data: {
+          caseId: created.id,
+          title: lib.title,
+          topicLabel: lib.topicLabel,
+          framework: lib.framework,
+          content: lib.content,
+          sourceLinks: lib.sourceLinks
+        }
+      });
+    }
+  }
+
   revalidatePath("/");
   revalidatePath("/history");
   redirect(`/cases/${created.id}`);
 }
 
-export default function NewCasePage() {
+async function saveToLibrary(formData: FormData) {
+  "use server";
+
+  const title = String(formData.get("title") ?? "").trim();
+  const topicLabel = String(formData.get("topicLabel") ?? "").trim() || null;
+  const framework = String(formData.get("standard") ?? "JGAAP");
+  const content = String(formData.get("notebookSummary") ?? "").trim();
+  const sourceLinks = String(formData.get("standardLinks") ?? "").trim();
+
+  if (!title || !content) {
+    throw new Error("ライブラリに保存するには、ケース名（要約タイトル）とNotebookLM要約の内容を入力してください。");
+  }
+
+  await prisma.summaryLibrary.create({
+    data: {
+      title,
+      topicLabel,
+      framework: framework === "IFRS" ? "IFRS" : framework === "BOTH" ? "BOTH" : "JGAAP",
+      content,
+      sourceLinks
+    }
+  });
+
+  revalidatePath("/summaries");
+  redirect("/summaries");
+}
+
+export default async function NewCasePage() {
+  const summaries = await prisma.summaryLibrary.findMany({
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, title: true, topicLabel: true, framework: true, updatedAt: true }
+  });
+
   return (
     <div className="space-y-4 max-w-3xl">
       <header className="page-header">
@@ -63,6 +113,7 @@ export default function NewCasePage() {
       </header>
 
       <form action={createCase} className="space-y-4 card">
+        <input type="hidden" name="selectedLibrarySummaryId" id="selectedLibrarySummaryId" value="" />
         <div>
           <label className="section-title">ケース名</label>
           <p className="section-help">例: 「ストックオプション付与のIFRS処理」</p>
@@ -112,6 +163,7 @@ export default function NewCasePage() {
           </p>
           <textarea
             name="standardLinks"
+            id="standardLinks"
             rows={3}
             className="textarea"
             placeholder="1行に1つずつURLを記載してください。"
@@ -120,15 +172,25 @@ export default function NewCasePage() {
 
         <div>
           <label className="section-title">NotebookLM 要約</label>
+          <SummarySelectorClient summaries={summaries} />
           <p className="section-help">
             NotebookLMで作成した要約をそのまま貼り付けてください（API連携は後で追加予定）。
           </p>
           <textarea
             name="notebookSummary"
+            id="notebookSummary"
             rows={6}
             className="textarea"
             placeholder="ここにNotebookLMの要約テキストを貼り付けてください。"
           />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="submit" formAction={saveToLibrary} className="secondary-button text-sm">
+              この要約をライブラリに保存
+            </button>
+          </div>
+          <p className="section-help mt-1">
+            上記ボタンで保存すると、要約一覧ページに追加され、次回以降のケース作成時に選択して再利用できます。ケース名・論点ラベル・会計基準・要約内容・会計基準リンクが保存されます。
+          </p>
         </div>
 
         <div className="flex justify-end gap-2">

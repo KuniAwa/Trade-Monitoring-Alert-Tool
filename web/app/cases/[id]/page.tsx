@@ -74,7 +74,8 @@ async function submitConversation(formData: FormData) {
   const aiMessage = await callAi({
     mode: "FOLLOWUP",
     payload: {
-      standard: c.standard,
+      standard: c.standard as "JGAAP" | "IFRS" | "BOTH",
+      topicLabel: c.topicLabel ?? null,
       transactionSummary: c.transactionSummary,
       initialQuestion: c.initialQuestion,
       standardLinks: c.standardLinks.map((l) => l.url),
@@ -86,9 +87,13 @@ async function submitConversation(formData: FormData) {
         })),
         { role: "user", content }
       ],
-      searchSummaries: c.searchResults.map(
-        (r) => `${r.title}\n${r.snippet}\n${r.url} [${r.source}]`
-      )
+      searchResults: c.searchResults.map((r) => ({
+        query: r.query,
+        title: r.title,
+        snippet: r.snippet,
+        url: r.url,
+        source: r.source
+      }))
     }
   });
 
@@ -129,10 +134,43 @@ async function generateDraftAnswer(formData: FormData) {
     throw new Error("ケースが見つかりませんでした。");
   }
 
+  let pastFeedbackFromSameTopic: string | undefined;
+  const topicLabel = (c.topicLabel ?? "").trim();
+  if (topicLabel) {
+    const sameTopicCases = await prisma.case.findMany({
+      where: {
+        id: { not: caseId },
+        topicLabel,
+        feedbacks: { some: {} }
+      },
+      include: {
+        feedbacks: { orderBy: { createdAt: "desc" }, take: 1 }
+      }
+    });
+    if (sameTopicCases.length > 0) {
+      pastFeedbackFromSameTopic = sameTopicCases
+        .map((other) => {
+          const fb = other.feedbacks[0];
+          const ratingLabel =
+            fb?.rating === "ADEQUATE"
+              ? "妥当"
+              : fb?.rating === "INSUFFICIENT"
+                ? "不足"
+                : fb?.rating === "INCORRECT"
+                  ? "誤り"
+                  : fb?.rating === "RECONSIDER"
+                    ? "要再検討"
+                    : fb?.rating ?? "—";
+          return `・過去ケース「${other.title}」: 評価=${ratingLabel}${fb?.comment ? `, コメント=${fb.comment}` : ""}`;
+        })
+        .join("\n");
+    }
+  }
+
   const aiAnswer = await callAi({
     mode: "DRAFT_ANSWER",
     payload: {
-      standard: c.standard,
+      standard: c.standard as "JGAAP" | "IFRS" | "BOTH",
       transactionSummary: c.transactionSummary,
       initialQuestion: c.initialQuestion,
       standardLinks: c.standardLinks.map((l) => l.url),
@@ -143,7 +181,8 @@ async function generateDraftAnswer(formData: FormData) {
       })),
       searchSummaries: c.searchResults.map(
         (r) => `${r.title}\n${r.snippet}\n${r.url} [${r.source}]`
-      )
+      ),
+      pastFeedbackFromSameTopic
     }
   });
 
@@ -249,7 +288,12 @@ export default async function CaseDetailPage({ params }: CaseDetailPageProps) {
       <section className="space-y-4">
         <header className="page-header">
           <div>
-            <h1 className="page-title">ケース詳細</h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="page-title">ケース詳細</h1>
+              <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-slate-200 bg-slate-100 text-slate-600">
+                {c.feedbacks.length > 0 ? "回答済" : "検討中"}
+              </span>
+            </div>
             <p className="page-subtitle">
               ケース情報・NotebookLM要約・基準リンクを確認しながら対話を進めます。
             </p>

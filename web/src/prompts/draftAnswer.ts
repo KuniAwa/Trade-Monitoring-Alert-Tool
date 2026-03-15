@@ -8,6 +8,8 @@ export interface DraftAnswerInput {
   standardLinks: string[];
   conversation: { role: "user" | "assistant"; content: string }[];
   searchSummaries: string[];
+  /** 同論点ラベルの過去ケースでのフィードバック（回答案の改善に活用） */
+  pastFeedbackFromSameTopic?: string;
 }
 
 export function buildDraftAnswerPrompt(input: DraftAnswerInput): string {
@@ -18,7 +20,8 @@ export function buildDraftAnswerPrompt(input: DraftAnswerInput): string {
     notebookSummaries,
     standardLinks,
     conversation,
-    searchSummaries
+    searchSummaries,
+    pastFeedbackFromSameTopic
   } = input;
 
   const standardLabel =
@@ -58,6 +61,15 @@ export function buildDraftAnswerPrompt(input: DraftAnswerInput): string {
     "【Perplexity 検索結果の要約（補助情報）】",
     searchSummaries.length ? searchSummaries.join("\n---\n") : "（未取得）",
     "",
+    ...(pastFeedbackFromSameTopic
+      ? [
+          "【同論点ラベルの過去ケースでのフィードバック】",
+          "以下は、同じ論点ラベルで過去に保存されたフィードバックです。『不足』『誤り』『要再検討』の指摘を踏まえ、今回の回答案ではそれらを補強・明確化してください。『妥当』のケースは参考にしつつ、一貫した品質にしてください。",
+          "",
+          pastFeedbackFromSameTopic,
+          ""
+        ]
+      : []),
     "制約条件:",
     "- 会計基準本文の全文引用は行わず、要点ベースで扱うこと",
     "- Web検索結果はあくまで補助情報とし、基準リンクとNotebookLM要約を優先すること",

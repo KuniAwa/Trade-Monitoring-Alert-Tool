@@ -21,6 +21,7 @@ model Case {
 
   standardLinks     StandardLink[]
   notebookSummaries NotebookSummary[]
+  caseSummary       CaseSummary?
   searchResults     SearchResult[]
   conversationTurns ConversationTurn[]
   draftAnswers      DraftAnswer[]
@@ -103,4 +104,29 @@ model Feedback {
   comment String?
 
   createdAt DateTime @default(now())
+}
+
+// 要約ライブラリ（再利用用）。ケースに紐づかない。
+model SummaryLibrary {
+  id          String   @id @default(cuid())
+  title       String
+  topicLabel  String?
+  framework   String   @default("JGAAP") // "JGAAP" | "IFRS" | "BOTH"
+  content     String
+  sourceLinks String   @default("") // 改行区切りURLなど
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ケースにコピーした要約のスナップショット（ライブラリ変更の影響を受けない）
+model CaseSummary {
+  id          String   @id @default(cuid())
+  case        Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId      String   @unique
+  title       String
+  topicLabel  String?
+  framework   String   @default("JGAAP")
+  content     String
+  sourceLinks String   @default("")
+  createdAt   DateTime @default(now())
 }

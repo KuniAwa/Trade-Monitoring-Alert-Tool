@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 async function getRecentCases() {
   const cases = await prisma.case.findMany({
     orderBy: { createdAt: "desc" },
-    take: 5
+    take: 5,
+    include: { _count: { select: { feedbacks: true } } }
   });
   return cases;
 }
@@ -53,6 +54,9 @@ export default async function DashboardPage() {
                         : c.standard === "IFRS"
                         ? "IFRS"
                         : "日本基準 / IFRS"}
+                    </span>
+                    <span className="ml-2 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ring-slate-200 bg-slate-100 text-slate-600">
+                      {c._count.feedbacks > 0 ? "回答済" : "検討中"}
                     </span>
                   </div>
                 </div>
