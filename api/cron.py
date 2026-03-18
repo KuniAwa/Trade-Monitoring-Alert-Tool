@@ -165,14 +165,31 @@ def get_nikkei_symbol_candidates() -> list[str]:
     env = get_env("NIKKEI_SYMBOL_CANDIDATES")
     if env:
         return [s.strip() for s in env.split(",") if s.strip()]
-    return ["N225", "NIY", "NK225", "1321"]
+    # NOTE:
+    # N225/NIY/NK225 のような「指数（Index）」系シンボルは time_series で 404 になるケースがあります。
+    # そのため、まずは日経225連動ETF（例: 1321, 1570）側を優先して解決します。
+    return ["1321", "1570"]
 
 
 def resolve_nikkei_symbol(api_key: str) -> str | None:
     """候補を順に試し、取得可能な最初の日経225系シンボルを返す。見つからなければ None。"""
-    for sym in get_nikkei_symbol_candidates():
+    # 1) 候補をそのまま time_series で試す
+    candidates = get_nikkei_symbol_candidates()
+    for sym in candidates:
         if check_symbol_available(api_key, sym):
             return sym
+
+    # 2) 候補が time_series で無効（例: 404）だった場合、
+    #    /stocks 検索で Twelve Data 側が認識している“正しいシンボル名”に変換して再試行する
+    #    ※ 追加の API 呼び出しが発生するため、候補数が多い場合は NIKKEI_SYMBOL_CANDIDATES を明示して固定するのがおすすめです。
+    for query in candidates:
+        matches = search_symbol_candidates(api_key, query)
+        for m in matches:
+            sym = m.get("symbol", "")
+            if not sym:
+                continue
+            if check_symbol_available(api_key, sym):
+                return sym
     return None
 
 
