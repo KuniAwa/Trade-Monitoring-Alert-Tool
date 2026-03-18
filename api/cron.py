@@ -16,7 +16,8 @@ import time
 import requests
 
 # 停止中の銘柄（再開時は set から削除するのみ）
-SYMBOLS_DISABLED: set[str] = {"AUD/JPY"}
+# Twelve Data の Minutely 制限対策などで一時停止したい場合はここに追加する。
+SYMBOLS_DISABLED: set[str] = {"AUD/JPY", "EUR/JPY"}
 
 BASE_URL = "https://api.twelvedata.com"
 INTERVAL_15 = "15min"
