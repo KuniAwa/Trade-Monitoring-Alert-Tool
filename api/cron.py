@@ -20,6 +20,8 @@ import requests
 SYMBOLS_DISABLED: set[str] = {"AUD/JPY", "EUR/JPY"}
 
 BASE_URL = "https://api.twelvedata.com"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+YAHOO_NIKKEI_CANDIDATES = ["NIY=F", "^N225"]
 INTERVAL_15 = "15min"
 INTERVAL_1H = "1h"
 INTERVAL_DAY = "1day"
@@ -57,6 +59,68 @@ def get_daily_ohlc(api_key: str, symbol: str) -> list:
     return data["values"]
 
 
+def _fetch_yahoo_chart(symbol: str, interval: str, range_value: str) -> list[dict]:
+    """
+    Yahoo Finance chart API から OHLC を取得し、
+    Twelve Data と同じ「新しい順」の dict リストに正規化して返す。
+    """
+    r = requests.get(
+        f"{YAHOO_CHART_URL}/{symbol}",
+        params={"interval": interval, "range": range_value},
+        timeout=30,
+    )
+    r.raise_for_status()
+    payload = r.json()
+    chart = payload.get("chart", {})
+    result = chart.get("result") or []
+    if not result:
+        raise ValueError(f"No chart result from Yahoo Finance for {symbol}: {payload}")
+    item = result[0]
+    timestamps = item.get("timestamp") or []
+    quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    if not timestamps:
+        raise ValueError(f"No timestamps from Yahoo Finance for {symbol}: {payload}")
+
+    tz = ZoneInfo("Asia/Tokyo")
+    rows: list[dict] = []
+    n = min(len(timestamps), len(opens), len(highs), len(lows), len(closes))
+    for i in range(n):
+        o = opens[i]
+        h = highs[i]
+        l = lows[i]
+        c = closes[i]
+        if o is None or h is None or l is None or c is None:
+            continue
+        dt = datetime.fromtimestamp(int(timestamps[i]), tz)
+        rows.append(
+            {
+                "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "open": str(o),
+                "high": str(h),
+                "low": str(l),
+                "close": str(c),
+            }
+        )
+    if not rows:
+        raise ValueError(f"No valid OHLC rows from Yahoo Finance for {symbol}")
+    return list(reversed(rows))
+
+
+def _resolve_nikkei_symbol_yahoo() -> str | None:
+    """Yahoo Finance で取得可能な日経225系シンボルを返す。"""
+    for sym in YAHOO_NIKKEI_CANDIDATES:
+        try:
+            _fetch_yahoo_chart(sym, "1d", "5d")
+            return sym
+        except Exception:
+            continue
+    return None
+
+
 def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
     """
     日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
@@ -68,6 +132,25 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
     start_str = f"{yesterday.isoformat()}T09:00:00"
     end_str = f"{yesterday.isoformat()}T15:45:00"
     try:
+        if symbol in YAHOO_NIKKEI_CANDIDATES:
+            values = _fetch_yahoo_chart(symbol, "15m", "5d")
+            session_values = []
+            for b in values:
+                dt = b.get("datetime", "")
+                try:
+                    d = datetime.fromisoformat(dt)
+                except Exception:
+                    continue
+                if d.date() == yesterday and "09:00" <= d.strftime("%H:%M") <= "15:45":
+                    session_values.append(b)
+            if not session_values:
+                return (None, None)
+            highs = [float_or(b.get("high"), 0) for b in session_values if float_or(b.get("high"), 0) > 0]
+            lows = [float_or(b.get("low"), 0) for b in session_values if float_or(b.get("low"), 0) > 0]
+            if not highs or not lows:
+                return (None, None)
+            return (max(highs), min(lows))
+
         r = requests.get(
             f"{BASE_URL}/time_series",
             params={
@@ -97,6 +180,8 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
 
 def get_15min_ohlc(api_key: str, symbol: str) -> list:
     """15分足を取得（直近30本、新しい順）。日本時間で返す。"""
+    if symbol in YAHOO_NIKKEI_CANDIDATES:
+        return _fetch_yahoo_chart(symbol, "15m", "10d")
     r = requests.get(
         f"{BASE_URL}/time_series",
         params={
@@ -118,6 +203,8 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
 
 def get_1h_ohlc(api_key: str, symbol: str) -> list:
     """1時間足を取得（直近25本、新しい順）。日本時間で返す。"""
+    if symbol in YAHOO_NIKKEI_CANDIDATES:
+        return _fetch_yahoo_chart(symbol, "60m", "1mo")
     r = requests.get(
         f"{BASE_URL}/time_series",
         params={
@@ -173,6 +260,11 @@ def get_nikkei_symbol_candidates() -> list[str]:
 
 def resolve_nikkei_symbol(api_key: str) -> str | None:
     """候補を順に試し、取得可能な最初の日経225系シンボルを返す。見つからなければ None。"""
+    # Yahoo Finance 側（優先）
+    yahoo_resolved = _resolve_nikkei_symbol_yahoo()
+    if yahoo_resolved:
+        return yahoo_resolved
+
     # 1) 候補をそのまま time_series で試す
     candidates = get_nikkei_symbol_candidates()
     for sym in candidates:
@@ -726,7 +818,9 @@ def run_checks() -> dict:
     ]
     nikkei_explicit = get_env("NIKKEI_SYMBOL")
     if nikkei_explicit:
-        if nikkei_explicit.upper() != "N225" and check_symbol_available(api_key, nikkei_explicit):
+        if nikkei_explicit in YAHOO_NIKKEI_CANDIDATES:
+            symbols.append((nikkei_explicit, "日経225先物", True))
+        elif nikkei_explicit.upper() != "N225" and check_symbol_available(api_key, nikkei_explicit):
             symbols.append((nikkei_explicit, "日経225先物", True))
     else:
         resolved = resolve_nikkei_symbol(api_key)
