@@ -259,30 +259,8 @@ def get_nikkei_symbol_candidates() -> list[str]:
 
 
 def resolve_nikkei_symbol(api_key: str) -> str | None:
-    """候補を順に試し、取得可能な最初の日経225系シンボルを返す。見つからなければ None。"""
-    # Yahoo Finance 側（優先）
-    yahoo_resolved = _resolve_nikkei_symbol_yahoo()
-    if yahoo_resolved:
-        return yahoo_resolved
-
-    # 1) 候補をそのまま time_series で試す
-    candidates = get_nikkei_symbol_candidates()
-    for sym in candidates:
-        if check_symbol_available(api_key, sym):
-            return sym
-
-    # 2) 候補が time_series で無効（例: 404）だった場合、
-    #    /stocks 検索で Twelve Data 側が認識している“正しいシンボル名”に変換して再試行する
-    #    ※ 追加の API 呼び出しが発生するため、候補数が多い場合は NIKKEI_SYMBOL_CANDIDATES を明示して固定するのがおすすめです。
-    for query in candidates:
-        matches = search_symbol_candidates(api_key, query)
-        for m in matches:
-            sym = m.get("symbol", "")
-            if not sym:
-                continue
-            if check_symbol_available(api_key, sym):
-                return sym
-    return None
+    """Yahoo Finance で取得可能な日経225系シンボルを返す。Twelve Data にはフォールバックしない。"""
+    return _resolve_nikkei_symbol_yahoo()
 
 
 def search_symbol_candidates(api_key: str, query: str) -> list[dict]:
@@ -818,9 +796,8 @@ def run_checks() -> dict:
     ]
     nikkei_explicit = get_env("NIKKEI_SYMBOL")
     if nikkei_explicit:
+        # 日経225は Yahoo Finance のみを利用する。Twelve Data 側にはフォールバックしない。
         if nikkei_explicit in YAHOO_NIKKEI_CANDIDATES:
-            symbols.append((nikkei_explicit, "日経225先物", True))
-        elif nikkei_explicit.upper() != "N225" and check_symbol_available(api_key, nikkei_explicit):
             symbols.append((nikkei_explicit, "日経225先物", True))
     else:
         resolved = resolve_nikkei_symbol(api_key)
