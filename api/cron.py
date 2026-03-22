@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 相場監視アラート - Vercel Cron エンドポイント
-15分足で前日高値/安値ブレイク + 20MA + パラボリックSAR 条件でメール通知
+15分足で前日高値/安値ブレイク + 20MA（+ オプションでパラボリックSAR）条件でメール通知
 """
 import os
 import json
@@ -32,6 +32,9 @@ OUTPUTSIZE_DAY = 3
 # 押し率: 50%以上は除外、33%以内を理想とする
 OSHIRITSU_EXCLUDE_PCT = 50.0
 OSHIRITSU_IDEAL_PCT = 33.0
+
+# アラート・サマリーでのパラボリックSAR: False のとき算定しない（条件からも除外）。True で再有効化。
+USE_PARABOLIC_SAR_IN_ALERTS = False
 
 
 def get_env(name: str, default: str = "") -> str:
@@ -468,14 +471,16 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
     sma_list = calc_sma(close_prices, 20)
     ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
 
-    # 15分足 パラボリックSAR
-    ohlc_oldest_first = list(reversed(ohlc_15))
-    highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
-    lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
-    closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
-    sar_list = calc_parabolic_sar(highs, lows, closes_asc)
-    idx_last_closed = len(sar_list) - 2
-    sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
+    # 15分足 パラボリックSAR（停止中は算定しない。USE_PARABOLIC_SAR_IN_ALERTS を True で復帰）
+    sar_val = 0.0
+    if USE_PARABOLIC_SAR_IN_ALERTS:
+        ohlc_oldest_first = list(reversed(ohlc_15))
+        highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
+        lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
+        closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
+        sar_list = calc_parabolic_sar(highs, lows, closes_asc)
+        idx_last_closed = len(sar_list) - 2
+        sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
 
     # 1時間足 環境認識（直近確定1h足: 終値 vs 20MA）
     closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
@@ -488,8 +493,14 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
 
     alerts = []
 
-    # ロング: 前日高値ブレイク + 15分20MA + SAR + 1h上昇環境 + 押し率50%未満
-    if close > prev_high and ma20 > 0 and close > ma20 and (sar_val <= 0 or close > sar_val) and trend_1h_up:
+    sar_ok_long = True
+    sar_ok_short = True
+    if USE_PARABOLIC_SAR_IN_ALERTS:
+        sar_ok_long = (sar_val <= 0 or close > sar_val)
+        sar_ok_short = (sar_val <= 0 or close < sar_val)
+
+    # ロング: 前日高値ブレイク + 15分20MA + (SAR) + 1h上昇環境 + 押し率50%未満
+    if close > prev_high and ma20 > 0 and close > ma20 and sar_ok_long and trend_1h_up:
         denom = bar_high - prev_high
         oshiritsu_pct = ((bar_high - close) / denom * 100.0) if denom > 0 else 0.0
         if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
@@ -510,8 +521,8 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "close_1h": close_1h,
             })
 
-    # ショート: 前日安値ブレイク + 15分20MA + SAR + 1h下降環境 + 押し率50%未満
-    if close < prev_low and ma20 > 0 and close < ma20 and (sar_val <= 0 or close < sar_val) and trend_1h_down:
+    # ショート: 前日安値ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
+    if close < prev_low and ma20 > 0 and close < ma20 and sar_ok_short and trend_1h_down:
         denom = prev_low - bar_low
         oshiritsu_pct = ((close - bar_low) / denom * 100.0) if denom > 0 else 0.0
         if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
@@ -561,6 +572,7 @@ def send_alert_email(alert: dict) -> None:
 
     oshi = alert.get("oshiritsu_pct")
     oshi_note = f"（理想: {OSHIRITSU_IDEAL_PCT}%以内）" if (oshi is not None and oshi <= OSHIRITSU_IDEAL_PCT) else ""
+    sar_display = alert["sar"] if USE_PARABOLIC_SAR_IN_ALERTS else "—（停止中）"
 
     body = f"""
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -576,7 +588,7 @@ def send_alert_email(alert: dict) -> None:
 ────────────────────
   終値        : {alert['close']}
   20MA        : {alert['ma20']}
-  パラボリックSAR : {alert['sar']}
+  パラボリックSAR : {sar_display}
 
 ────────────────────
   前日（NY基準）
@@ -615,7 +627,7 @@ def send_alert_email(alert: dict) -> None:
 def should_send_daily_summary() -> tuple[bool, str | None, str]:
     """
     平日のサマリー送信タイミングを判定。
-    - 0:00 JST (00:00〜00:14): 監視対象の全銘柄（FX + 日経）を1通にまとめて送信 → ("all", now_str)
+    - 平日かつ JST 23:00〜23:14（Cron のずれ対策）に1回だけ、監視対象の全銘柄（FX + 日経）を1通にまとめて送信 → ("all", now_str)
     戻り値: (送信するか, グループ "all"|None, 表示用 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
@@ -624,7 +636,7 @@ def should_send_daily_summary() -> tuple[bool, str | None, str]:
         return (False, None, "")
     hm = now.strftime("%H:%M")
     now_str = now.strftime("%Y-%m-%d %H:%M JST")
-    if "00:00" <= hm < "00:15":
+    if "23:00" <= hm < "23:15":
         return (True, "all", now_str)
     return (False, None, "")
 
@@ -670,14 +682,16 @@ def build_snapshot(
     sma_list = calc_sma(close_prices, 20)
     ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
 
-    # 15分足 SAR
-    ohlc_oldest_first = list(reversed(ohlc_15))
-    highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
-    lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
-    closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
-    sar_list = calc_parabolic_sar(highs, lows, closes_asc)
-    idx_last_closed = len(sar_list) - 2
-    sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
+    # 15分足 SAR（停止中は算定しない）
+    sar_val = 0.0
+    if USE_PARABOLIC_SAR_IN_ALERTS:
+        ohlc_oldest_first = list(reversed(ohlc_15))
+        highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
+        lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
+        closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
+        sar_list = calc_parabolic_sar(highs, lows, closes_asc)
+        idx_last_closed = len(sar_list) - 2
+        sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
 
     # 1時間足 20MA
     closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
@@ -702,7 +716,7 @@ def build_snapshot(
         "prev_high": prev_high,
         "prev_low": prev_low,
         "ma20_15m": ma20,
-        "sar_15m": sar_val,
+        "sar_15m": sar_val if USE_PARABOLIC_SAR_IN_ALERTS else None,
         "close_1h": close_1h,
         "ma20_1h": ma20_1h,
         "oshiritsu_long": round(oshiritsu_long, 1) if oshiritsu_long is not None else None,
@@ -710,7 +724,7 @@ def build_snapshot(
 
 
 def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
-    """平日のサマリーメール送信（0:00 JST に監視対象全銘柄を1通）。"""
+    """平日のサマリーメール送信（JST 23:00 頃・1日1通）。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -740,7 +754,8 @@ def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
         lines.append("  15分足")
         lines.append(f"    終値        : {snap['close']}")
         lines.append(f"    20MA        : {snap['ma20_15m']}")
-        lines.append(f"    パラボリックSAR : {snap['sar_15m']}")
+        sar_s = snap.get("sar_15m")
+        lines.append(f"    パラボリックSAR : {sar_s if sar_s is not None else '—'}")
         lines.append("")
         lines.append("  前日")
         lines.append(f"    前日高値    : {snap['prev_high']}")
