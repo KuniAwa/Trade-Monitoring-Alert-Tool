@@ -10,7 +10,7 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import BaseHTTPRequestHandler
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
 import requests
@@ -124,6 +124,17 @@ def _resolve_nikkei_symbol_yahoo() -> str | None:
     return None
 
 
+def _prev_business_day_jst(d: date) -> date:
+    """
+    JST 基準で「前営業日」の日付（月〜金）を返す。土日はさかのぼってスキップする。
+    東証の祝日休場は未考慮（祝日カレンダーがないため）。
+    """
+    prev = d - timedelta(days=1)
+    while prev.weekday() >= 5:  # 土曜=5, 日曜=6
+        prev -= timedelta(days=1)
+    return prev
+
+
 def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
     """
     日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
@@ -136,6 +147,8 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
     end_str = f"{yesterday.isoformat()}T15:45:00"
     try:
         if symbol in YAHOO_NIKKEI_CANDIDATES:
+            # Yahoo 日経のみ: カレンダー前日ではなく前営業日（土日スキップ）。月曜は金曜セッションを参照。
+            session_date = _prev_business_day_jst(today)
             values = _fetch_yahoo_chart(symbol, "15m", "5d")
             session_values = []
             for b in values:
@@ -144,7 +157,7 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
                     d = datetime.fromisoformat(dt)
                 except Exception:
                     continue
-                if d.date() == yesterday and "09:00" <= d.strftime("%H:%M") <= "15:45":
+                if d.date() == session_date and "09:00" <= d.strftime("%H:%M") <= "15:45":
                     session_values.append(b)
             if not session_values:
                 return (None, None)
