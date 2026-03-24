@@ -17,7 +17,7 @@ import requests
 
 # 停止中の銘柄（再開時は set から削除するのみ）
 # Twelve Data の Minutely 制限対策などで一時停止したい場合はここに追加する。
-SYMBOLS_DISABLED: set[str] = {"AUD/JPY", "EUR/JPY"}
+SYMBOLS_DISABLED: set[str] = {"AUD/JPY"}
 
 BASE_URL = "https://api.twelvedata.com"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
