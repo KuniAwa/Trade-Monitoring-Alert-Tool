@@ -736,8 +736,59 @@ def build_snapshot(
     }
 
 
-def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
-    """平日のサマリーメール送信（JST 23:00 頃・1日1通）。"""
+def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
+    """
+    日経（JST 日中セッション高安）の build_snapshot が None になった理由を、
+    build_snapshot と同じ判定順で日本語1文にまとめる。
+    """
+    try:
+        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
+        if prev_high is None or prev_low is None:
+            if symbol in YAHOO_NIKKEI_CANDIDATES:
+                detail = (
+                    "前営業日の日中セッション（JST 9:00〜15:45）の高値・安値を、"
+                    "Yahoo Finance の15分足から算出できませんでした。"
+                )
+            else:
+                detail = (
+                    "前日の日中セッション（JST 9:00〜15:45）の高値・安値を、"
+                    "Twelve Data の15分足から取得できませんでした。"
+                )
+            return f"{label}（{symbol}）をサマリーに含められませんでした。{detail}"
+        ohlc_15 = get_15min_ohlc(api_key, symbol)
+        if not ohlc_15:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足データが空です。"
+            )
+        bar = last_closed_bar(ohlc_15)
+        if not bar:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足の確定足を取得できませんでした。"
+            )
+        close = float_or(bar.get("close"), 0)
+        if close <= 0:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足の終値が無効です。"
+            )
+        return (
+            f"{label}（{symbol}）をサマリーに含められませんでした（理由は特定できませんでした）。"
+        )
+    except Exception as e:
+        return (
+            f"{label}（{symbol}）をサマリーに含められませんでした。"
+            f"データ取得エラー: {str(e)[:200]}"
+        )
+
+
+def send_summary_email(
+    snapshots: list[dict],
+    now_jst_str: str,
+    nikkei_notes: list[str] | None = None,
+) -> None:
+    """平日のサマリーメール送信（JST 23:00 頃・1日1通）。nikkei_notes は日経が載らないときの理由行。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -781,6 +832,16 @@ def send_summary_email(snapshots: list[dict], now_jst_str: str) -> None:
         oshi = snap.get("oshiritsu_long")
         lines.append("  押し率（ロング想定）")
         lines.append(f"    押し率      : {oshi if oshi is not None else '-'}%")
+        lines.append("")
+
+    if nikkei_notes:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("  日経がサマリーに含まれない理由")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        for note in nikkei_notes:
+            lines.append(f"  {note}")
+            lines.append("")
         lines.append("")
 
     lines.append("※ このメールは通知専用です。自動売買は行いません。判断はご自身でお願いします。")
@@ -874,16 +935,30 @@ def run_checks() -> dict:
         if should_send and group and now_jst_str:
             summary_symbols = list(symbols) if group == "all" else []
             snapshots: list[dict] = []
+            nikkei_notes: list[str] = []
             for symbol, label, use_jst_1545 in summary_symbols:
                 try:
                     snap = build_snapshot(api_key, symbol, label, use_jst_1545)
                     if snap:
                         snapshots.append(snap)
+                    elif use_jst_1545:
+                        nikkei_notes.append(
+                            explain_nikkei_summary_skip(api_key, symbol, label)
+                        )
                 except Exception as e:
                     errors.append(f"summary {symbol}: {str(e)[:150]}")
+                    if use_jst_1545:
+                        nikkei_notes.append(
+                            f"{label}（{symbol}）をサマリーに含められませんでした。"
+                            f"データ取得エラー: {str(e)[:200]}"
+                        )
             if snapshots:
                 try:
-                    send_summary_email(snapshots, now_jst_str)
+                    send_summary_email(
+                        snapshots,
+                        now_jst_str,
+                        nikkei_notes if nikkei_notes else None,
+                    )
                 except Exception as e:
                     errors.append(f"summary send: {str(e)[:150]}")
     except Exception as e:
