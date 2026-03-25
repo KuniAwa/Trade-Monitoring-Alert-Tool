@@ -1,5 +1,7 @@
 # このプロジェクトを GitHub にプッシュする方法
 
+相場監視アラートのコードはリポジトリ内の **`market-alert/`** にあります。モノレポ全体をプッシュする場合は、リポジトリルートで `git add` してください。
+
 ## 前提
 
 - **Git** がインストールされていること（未導入の場合は下記「Git が認識されない場合」を参照）
@@ -98,15 +100,12 @@ venv/
 ### 2-4. ファイルを追加してコミット
 
 ```powershell
-git add api/
-git add vercel.json
-git add requirements.txt
-git add README.md
-git add docs/
-git add .vercelignore
+git add market-alert/
 git add .gitignore
 git status
 ```
+
+（`market-alert` だけ更新する場合は `git add market-alert/` で足ります。ルートの `.gitignore` はリポジトリ共通のためそのまま含めます。）
 
 `git status` で、意図したファイルだけが追加されているか確認します。
 
@@ -174,7 +173,7 @@ GitHub はパスワードでのプッシュを廃止しているため、**Perso
 ```powershell
 cd "c:\Users\kunik\OneDrive\ドキュメント\Apps\Cursor"
 git init
-git add api/ vercel.json requirements.txt README.md docs/ .vercelignore .gitignore
+git add market-alert/ .gitignore
 git commit -m "Initial commit: 相場監視アラート（Vercel + Twelve Data）"
 git remote add origin https://github.com/あなたのユーザー名/リポジトリ名.git
 git branch -M main

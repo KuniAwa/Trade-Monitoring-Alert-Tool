@@ -13,7 +13,10 @@ async function createCase(formData: FormData) {
   const initialQuestion = String(formData.get("initialQuestion") ?? "").trim();
   const standardLinksRaw = String(formData.get("standardLinks") ?? "");
   const notebookSummary = String(formData.get("notebookSummary") ?? "").trim();
-  const selectedLibrarySummaryId = String(formData.get("selectedLibrarySummaryId") ?? "").trim();
+  const selectedLibrarySummaryIdsRaw = String(formData.get("selectedLibrarySummaryIds") ?? "").trim();
+  const selectedLibrarySummaryIds = selectedLibrarySummaryIdsRaw
+    ? selectedLibrarySummaryIdsRaw.split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
 
   if (!title || !transactionSummary || !initialQuestion) {
     throw new Error("ケース名・取引概要・最初の質問は必須です。");
@@ -45,19 +48,25 @@ async function createCase(formData: FormData) {
     }
   });
 
-  if (selectedLibrarySummaryId) {
-    const lib = await prisma.summaryLibrary.findUnique({
-      where: { id: selectedLibrarySummaryId }
+  if (selectedLibrarySummaryIds.length > 0) {
+    const libs = await prisma.summaryLibrary.findMany({
+      where: { id: { in: selectedLibrarySummaryIds } }
     });
-    if (lib) {
+    const ordered = selectedLibrarySummaryIds
+      .map((id) => libs.find((l) => l.id === id))
+      .filter((l): l is NonNullable<typeof l> => l != null);
+    if (ordered.length > 0) {
+      const combinedContent = ordered.map((l) => l.content).join("\n\n---\n\n");
+      const combinedSourceLinks = [...new Set(ordered.flatMap((l) => l.sourceLinks.split("\n").map((s) => s.trim()).filter(Boolean)))].join("\n");
+      const first = ordered[0];
       await prisma.caseSummary.create({
         data: {
           caseId: created.id,
-          title: lib.title,
-          topicLabel: lib.topicLabel,
-          framework: lib.framework,
-          content: lib.content,
-          sourceLinks: lib.sourceLinks
+          title: ordered.length > 1 ? "複数要約の統合" : first.title,
+          topicLabel: first.topicLabel,
+          framework: first.framework,
+          content: combinedContent,
+          sourceLinks: combinedSourceLinks
         }
       });
     }
@@ -113,7 +122,7 @@ export default async function NewCasePage() {
       </header>
 
       <form action={createCase} className="space-y-4 card">
-        <input type="hidden" name="selectedLibrarySummaryId" id="selectedLibrarySummaryId" value="" />
+        <input type="hidden" name="selectedLibrarySummaryIds" id="selectedLibrarySummaryIds" value="" />
         <div>
           <label className="section-title">ケース名</label>
           <p className="section-help">例: 「ストックオプション付与のIFRS処理」</p>

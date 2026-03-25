@@ -1,5 +1,34 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+async function deleteSummary(formData: FormData) {
+  "use server";
+  const id = String(formData.get("id") ?? "").trim();
+  if (!id) return;
+  const row = await prisma.summaryLibrary.findUnique({ where: { id } });
+  if (!row) return;
+  await prisma.summaryLibrary.delete({ where: { id } });
+  revalidatePath("/summaries");
+}
+
+async function duplicateSummary(formData: FormData) {
+  "use server";
+  const id = String(formData.get("id") ?? "").trim();
+  if (!id) return;
+  const source = await prisma.summaryLibrary.findUnique({ where: { id } });
+  if (!source) return;
+  await prisma.summaryLibrary.create({
+    data: {
+      title: `${source.title} (コピー)`,
+      topicLabel: source.topicLabel,
+      framework: source.framework,
+      content: source.content,
+      sourceLinks: source.sourceLinks
+    }
+  });
+  revalidatePath("/summaries");
+}
 
 export default async function SummariesPage() {
   const items = await prisma.summaryLibrary.findMany({
@@ -35,6 +64,7 @@ export default async function SummariesPage() {
                   <th className="p-2 font-semibold">topicLabel</th>
                   <th className="p-2 font-semibold">framework</th>
                   <th className="p-2 font-semibold">updatedAt</th>
+                  <th className="p-2 font-semibold w-40">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -45,6 +75,31 @@ export default async function SummariesPage() {
                     <td className="p-2 text-slate-600">{row.framework}</td>
                     <td className="p-2 text-slate-500">
                       {row.updatedAt.toLocaleString("ja-JP")}
+                    </td>
+                    <td className="p-2">
+                      <div className="flex flex-wrap gap-1">
+                        <Link
+                          href={`/summaries/${row.id}/edit`}
+                          className="secondary-button text-xs py-1 px-2"
+                        >
+                          Edit
+                        </Link>
+                        <form action={duplicateSummary} className="inline">
+                          <input type="hidden" name="id" value={row.id} />
+                          <button type="submit" className="secondary-button text-xs py-1 px-2">
+                            Duplicate
+                          </button>
+                        </form>
+                        <form action={deleteSummary} className="inline">
+                          <input type="hidden" name="id" value={row.id} />
+                          <button
+                            type="submit"
+                            className="secondary-button text-xs py-1 px-2 border-red-300 text-red-700 hover:bg-red-50"
+                          >
+                            Delete
+                          </button>
+                        </form>
+                      </div>
                     </td>
                   </tr>
                 ))}
