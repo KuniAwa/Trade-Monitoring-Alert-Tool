@@ -488,6 +488,67 @@ def last_closed_bar(values: list) -> dict | None:
     return values[1]
 
 
+def oshiritsu_long_breakout_path(
+    ohlc_15: list, breakout_level: float, current_bar: dict
+) -> float | None:
+    """
+    ロング押し率: (breakout_high - 現在終値) / (breakout_high - breakout_level)
+    breakout_level = 前日高値。breakout_high = 初めて high が breakout_level を超えた足から
+    直近確定足までの最高値。
+    """
+    if len(ohlc_15) < 2:
+        return None
+    chrono = list(reversed(ohlc_15))
+    end_idx = len(chrono) - 2
+    if end_idx < 0:
+        return None
+    break_idx = None
+    for i in range(0, end_idx + 1):
+        if float_or(chrono[i].get("high"), 0) > breakout_level:
+            break_idx = i
+            break
+    if break_idx is None:
+        return None
+    highs = [float_or(chrono[j].get("high"), 0) for j in range(break_idx, end_idx + 1)]
+    breakout_high = max(highs) if highs else 0.0
+    denom = breakout_high - breakout_level
+    if denom <= 0:
+        return None
+    current_close = float_or(current_bar.get("close"), 0)
+    return (breakout_high - current_close) / denom * 100.0
+
+
+def oshiritsu_short_breakout_path(
+    ohlc_15: list, breakout_level: float, current_bar: dict
+) -> float | None:
+    """
+    ショート押し率: (現在終値 - breakout_low) / (breakout_level - breakout_low)
+    breakout_level = 前日安値。breakout_low = 初めて low が breakout_level を下回った足から
+    直近確定足までの最安値。
+    """
+    if len(ohlc_15) < 2:
+        return None
+    chrono = list(reversed(ohlc_15))
+    end_idx = len(chrono) - 2
+    if end_idx < 0:
+        return None
+    break_idx = None
+    for i in range(0, end_idx + 1):
+        lo = float_or(chrono[i].get("low"), 0)
+        if lo > 0 and lo < breakout_level:
+            break_idx = i
+            break
+    if break_idx is None:
+        return None
+    lows = [float_or(chrono[j].get("low"), 0) for j in range(break_idx, end_idx + 1)]
+    breakout_low = min(lows) if lows else 0.0
+    denom = breakout_level - breakout_low
+    if denom <= 0:
+        return None
+    current_close = float_or(current_bar.get("close"), 0)
+    return (current_close - breakout_low) / denom * 100.0
+
+
 def previous_day_from_daily(daily_values: list) -> dict | None:
     """前日足（日足の2本目＝1つ前の日）。"""
     if not daily_values or len(daily_values) < 2:
@@ -523,8 +584,6 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
 
     bar_dt = bar.get("datetime", "")
     close = float_or(bar.get("close"), 0)
-    bar_high = float_or(bar.get("high"), 0)
-    bar_low = float_or(bar.get("low"), 0)
     if close <= 0:
         return []
 
@@ -563,9 +622,10 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
 
     # ロング: 前日高値ブレイク + 15分20MA + (SAR) + 1h上昇環境 + 押し率50%未満
     if close > prev_high and ma20 > 0 and close > ma20 and sar_ok_long and trend_1h_up:
-        denom = bar_high - prev_high
-        oshiritsu_pct = ((bar_high - close) / denom * 100.0) if denom > 0 else 0.0
-        if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
+        oshiritsu_pct = oshiritsu_long_breakout_path(ohlc_15, prev_high, bar)
+        if oshiritsu_pct is None:
+            pass
+        elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
             pass
         else:
             alerts.append({
@@ -585,9 +645,10 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
 
     # ショート: 前日安値ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
     if close < prev_low and ma20 > 0 and close < ma20 and sar_ok_short and trend_1h_down:
-        denom = prev_low - bar_low
-        oshiritsu_pct = ((close - bar_low) / denom * 100.0) if denom > 0 else 0.0
-        if oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
+        oshiritsu_pct = oshiritsu_short_breakout_path(ohlc_15, prev_low, bar)
+        if oshiritsu_pct is None:
+            pass
+        elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
             pass
         else:
             alerts.append({
@@ -762,13 +823,9 @@ def build_snapshot(
     close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
     ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
 
-    # 押し率（ロング方向想定で算出。ショート側は参考値として同一式は使わない）
-    bar_high = float_or(bar.get("high"), 0)
-    bar_low = float_or(bar.get("low"), 0)
-    oshiritsu_long = None
-    if bar_high > prev_high:
-        denom = bar_high - prev_high
-        oshiritsu_long = ((bar_high - close) / denom * 100.0) if denom > 0 else 0.0
+    # 押し率（ロング: ブレイク後〜直近確定足までのレンジで算出。ショート側はサマリーでは出さない）
+    oshiritsu_raw = oshiritsu_long_breakout_path(ohlc_15, prev_high, bar)
+    oshiritsu_long = round(oshiritsu_raw, 1) if oshiritsu_raw is not None else None
 
     return {
         "symbol": symbol,
