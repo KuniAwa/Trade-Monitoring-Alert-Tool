@@ -135,6 +135,26 @@ def _prev_business_day_jst(d: date) -> date:
     return prev
 
 
+def _yahoo_trading_dates_desc(values: list[dict], today: date) -> list[date]:
+    """
+    Yahoo 15分足に現れる JST の日付のうち、今日より前のものを新しい順に列挙。
+    東証の祝日などで特定日に足が無い場合も、他の日を試せるようにする。
+    """
+    s: set[date] = set()
+    for b in values:
+        dt_str = b.get("datetime", "")
+        try:
+            d = datetime.fromisoformat(dt_str)
+        except Exception:
+            continue
+        if d.tzinfo is not None:
+            d = d.astimezone(ZoneInfo("Asia/Tokyo"))
+        bd = d.date()
+        if bd < today:
+            s.add(bd)
+    return sorted(s, reverse=True)
+
+
 def _yahoo_session_high_low_from_15m(
     values: list[dict], session_date: date
 ) -> tuple[float | None, float | None]:
@@ -185,11 +205,16 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
     end_str = f"{yesterday.isoformat()}T15:45:00"
     try:
         if symbol in YAHOO_NIKKEI_CANDIDATES:
-            # Yahoo 日経のみ: カレンダー前日ではなく前営業日（土日スキップ）。月曜は金曜セッションを参照。
-            session_date = _prev_business_day_jst(today)
-            # 15m は 5d だと不足することがあるため 1mo。日中に足が無い先物は時間帯を段階的に広げる。
-            values = _fetch_yahoo_chart(symbol, "15m", "1mo")
-            return _yahoo_session_high_low_from_15m(values, session_date)
+            for range_val in ("1mo", "3mo"):
+                values = _fetch_yahoo_chart(symbol, "15m", range_val)
+                dates = _yahoo_trading_dates_desc(values, today)
+                if not dates:
+                    dates = [_prev_business_day_jst(today)]
+                for session_date in dates:
+                    hi, lo = _yahoo_session_high_low_from_15m(values, session_date)
+                    if hi is not None and lo is not None:
+                        return (hi, lo)
+            return (None, None)
 
         r = requests.get(
             f"{BASE_URL}/time_series",
