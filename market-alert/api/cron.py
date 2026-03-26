@@ -488,50 +488,49 @@ def last_closed_bar(values: list) -> dict | None:
     return values[1]
 
 
-def oshiritsu_long_breakout_path(
+def long_breakout_oshiritsu_and_high(
     ohlc_15: list, breakout_level: float, current_bar: dict
-) -> float | None:
+) -> tuple[float | None, float | None]:
     """
-    ロング押し率: (breakout_high - 現在終値) / (breakout_high - breakout_level)
-    breakout_level = 前日高値。breakout_high = 初めて high が breakout_level を超えた足から
-    直近確定足までの最高値。
+    ロング: 押し率 (breakout_high - 現在終値) / (breakout_high - breakout_level) と
+    breakout_high（ブレイク後〜直近確定足までの最高値）。失敗時は (None, None)。
     """
     if len(ohlc_15) < 2:
-        return None
+        return (None, None)
     chrono = list(reversed(ohlc_15))
     end_idx = len(chrono) - 2
     if end_idx < 0:
-        return None
+        return (None, None)
     break_idx = None
     for i in range(0, end_idx + 1):
         if float_or(chrono[i].get("high"), 0) > breakout_level:
             break_idx = i
             break
     if break_idx is None:
-        return None
+        return (None, None)
     highs = [float_or(chrono[j].get("high"), 0) for j in range(break_idx, end_idx + 1)]
     breakout_high = max(highs) if highs else 0.0
     denom = breakout_high - breakout_level
     if denom <= 0:
-        return None
+        return (None, None)
     current_close = float_or(current_bar.get("close"), 0)
-    return (breakout_high - current_close) / denom * 100.0
+    pct = (breakout_high - current_close) / denom * 100.0
+    return (pct, breakout_high)
 
 
-def oshiritsu_short_breakout_path(
+def short_breakout_oshiritsu_and_low(
     ohlc_15: list, breakout_level: float, current_bar: dict
-) -> float | None:
+) -> tuple[float | None, float | None]:
     """
-    ショート押し率: (現在終値 - breakout_low) / (breakout_level - breakout_low)
-    breakout_level = 前日安値。breakout_low = 初めて low が breakout_level を下回った足から
-    直近確定足までの最安値。
+    ショート: 押し率 (現在終値 - breakout_low) / (breakout_level - breakout_low) と
+    breakout_low。失敗時は (None, None)。
     """
     if len(ohlc_15) < 2:
-        return None
+        return (None, None)
     chrono = list(reversed(ohlc_15))
     end_idx = len(chrono) - 2
     if end_idx < 0:
-        return None
+        return (None, None)
     break_idx = None
     for i in range(0, end_idx + 1):
         lo = float_or(chrono[i].get("low"), 0)
@@ -539,14 +538,15 @@ def oshiritsu_short_breakout_path(
             break_idx = i
             break
     if break_idx is None:
-        return None
+        return (None, None)
     lows = [float_or(chrono[j].get("low"), 0) for j in range(break_idx, end_idx + 1)]
     breakout_low = min(lows) if lows else 0.0
     denom = breakout_level - breakout_low
     if denom <= 0:
-        return None
+        return (None, None)
     current_close = float_or(current_bar.get("close"), 0)
-    return (current_close - breakout_low) / denom * 100.0
+    pct = (current_close - breakout_low) / denom * 100.0
+    return (pct, breakout_low)
 
 
 def previous_day_from_daily(daily_values: list) -> dict | None:
@@ -622,7 +622,7 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
 
     # ロング: 前日高値ブレイク + 15分20MA + (SAR) + 1h上昇環境 + 押し率50%未満
     if close > prev_high and ma20 > 0 and close > ma20 and sar_ok_long and trend_1h_up:
-        oshiritsu_pct = oshiritsu_long_breakout_path(ohlc_15, prev_high, bar)
+        oshiritsu_pct, breakout_high = long_breakout_oshiritsu_and_high(ohlc_15, prev_high, bar)
         if oshiritsu_pct is None:
             pass
         elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
@@ -636,16 +636,16 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "prev_high": prev_high,
                 "prev_low": prev_low,
                 "ma20": ma20,
-                "sar": sar_val,
                 "datetime": bar_dt,
                 "oshiritsu_pct": round(oshiritsu_pct, 1),
+                "breakout_high": breakout_high,
                 "ma20_1h": ma20_1h,
                 "close_1h": close_1h,
             })
 
     # ショート: 前日安値ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
     if close < prev_low and ma20 > 0 and close < ma20 and sar_ok_short and trend_1h_down:
-        oshiritsu_pct = oshiritsu_short_breakout_path(ohlc_15, prev_low, bar)
+        oshiritsu_pct, breakout_low = short_breakout_oshiritsu_and_low(ohlc_15, prev_low, bar)
         if oshiritsu_pct is None:
             pass
         elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
@@ -659,9 +659,9 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "prev_high": prev_high,
                 "prev_low": prev_low,
                 "ma20": ma20,
-                "sar": sar_val,
                 "datetime": bar_dt,
                 "oshiritsu_pct": round(oshiritsu_pct, 1),
+                "breakout_low": breakout_low,
                 "ma20_1h": ma20_1h,
                 "close_1h": close_1h,
             })
@@ -695,7 +695,10 @@ def send_alert_email(alert: dict) -> None:
 
     oshi = alert.get("oshiritsu_pct")
     oshi_note = f"（理想: {OSHIRITSU_IDEAL_PCT}%以内）" if (oshi is not None and oshi <= OSHIRITSU_IDEAL_PCT) else ""
-    sar_display = alert["sar"] if USE_PARABOLIC_SAR_IN_ALERTS else "—（停止中）"
+    if alert.get("direction") == "long":
+        breakout_line = f"  ブレイク後最高値 : {alert.get('breakout_high', '-')}"
+    else:
+        breakout_line = f"  ブレイク後最安値 : {alert.get('breakout_low', '-')}"
 
     body = f"""
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -711,7 +714,6 @@ def send_alert_email(alert: dict) -> None:
 ────────────────────
   終値        : {alert['close']}
   20MA        : {alert['ma20']}
-  パラボリックSAR : {sar_display}
 
 ────────────────────
   前日（NY基準）
@@ -727,6 +729,7 @@ def send_alert_email(alert: dict) -> None:
 
 ────────────────────
   押し率      : {oshi if oshi is not None else '-'}% {oshi_note}
+{breakout_line}
 ────────────────────
 
 ※ 自動売買は行いません。判断はご自身でお願いします。
@@ -805,17 +808,6 @@ def build_snapshot(
     sma_list = calc_sma(close_prices, 20)
     ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
 
-    # 15分足 SAR（停止中は算定しない）
-    sar_val = 0.0
-    if USE_PARABOLIC_SAR_IN_ALERTS:
-        ohlc_oldest_first = list(reversed(ohlc_15))
-        highs = [float_or(b.get("high"), 0) for b in ohlc_oldest_first]
-        lows = [float_or(b.get("low"), 0) for b in ohlc_oldest_first]
-        closes_asc = [float_or(b.get("close"), 0) for b in ohlc_oldest_first]
-        sar_list = calc_parabolic_sar(highs, lows, closes_asc)
-        idx_last_closed = len(sar_list) - 2
-        sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
-
     # 1時間足 20MA
     closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
     sma_1h = calc_sma(closes_1h, 20)
@@ -823,8 +815,8 @@ def build_snapshot(
     close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
     ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
 
-    # 押し率（ロング: ブレイク後〜直近確定足までのレンジで算出。ショート側はサマリーでは出さない）
-    oshiritsu_raw = oshiritsu_long_breakout_path(ohlc_15, prev_high, bar)
+    # 押し率・ブレイク後最高値（ロング想定。ショートはサマリーでは出さない）
+    oshiritsu_raw, breakout_high_val = long_breakout_oshiritsu_and_high(ohlc_15, prev_high, bar)
     oshiritsu_long = round(oshiritsu_raw, 1) if oshiritsu_raw is not None else None
 
     return {
@@ -835,10 +827,10 @@ def build_snapshot(
         "prev_high": prev_high,
         "prev_low": prev_low,
         "ma20_15m": ma20,
-        "sar_15m": sar_val if USE_PARABOLIC_SAR_IN_ALERTS else None,
         "close_1h": close_1h,
         "ma20_1h": ma20_1h,
-        "oshiritsu_long": round(oshiritsu_long, 1) if oshiritsu_long is not None else None,
+        "oshiritsu_long": oshiritsu_long,
+        "breakout_high": breakout_high_val,
     }
 
 
@@ -924,8 +916,6 @@ def send_summary_email(
         lines.append("  15分足")
         lines.append(f"    終値        : {snap['close']}")
         lines.append(f"    20MA        : {snap['ma20_15m']}")
-        sar_s = snap.get("sar_15m")
-        lines.append(f"    パラボリックSAR : {sar_s if sar_s is not None else '—'}")
         lines.append("")
         lines.append("  前日")
         lines.append(f"    前日高値    : {snap['prev_high']}")
@@ -936,8 +926,10 @@ def send_summary_email(
         lines.append(f"    20MA        : {snap['ma20_1h']}")
         lines.append("")
         oshi = snap.get("oshiritsu_long")
+        bh = snap.get("breakout_high")
         lines.append("  押し率（ロング想定）")
         lines.append(f"    押し率      : {oshi if oshi is not None else '-'}%")
+        lines.append(f"    ブレイク後最高値 : {bh if bh is not None else '-'}")
         lines.append("")
 
     if nikkei_notes:
