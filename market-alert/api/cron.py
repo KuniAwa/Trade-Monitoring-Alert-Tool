@@ -135,6 +135,44 @@ def _prev_business_day_jst(d: date) -> date:
     return prev
 
 
+def _yahoo_session_high_low_from_15m(
+    values: list[dict], session_date: date
+) -> tuple[float | None, float | None]:
+    """
+    Yahoo 15分足から session_date（JST の日付）の高安を返す。
+    まず東証イメージの日中 09:00〜15:45 を対象。NIY=F 等で該当が無い場合は
+    同日 08:00〜16:00、さらに無ければ同日の全日（CME 先物の取引時間差の救済）。
+    """
+    windows: list[tuple[int, int]] = [
+        (9 * 60 + 0, 15 * 60 + 45),
+        (8 * 60 + 0, 16 * 60 + 0),
+        (0, 24 * 60 - 1),
+    ]
+    for start_min, end_min in windows:
+        session_values: list[dict] = []
+        for b in values:
+            dt_str = b.get("datetime", "")
+            try:
+                d = datetime.fromisoformat(dt_str)
+            except Exception:
+                continue
+            if d.tzinfo is not None:
+                d = d.astimezone(ZoneInfo("Asia/Tokyo"))
+            if d.date() != session_date:
+                continue
+            mins = d.hour * 60 + d.minute
+            if not (start_min <= mins <= end_min):
+                continue
+            session_values.append(b)
+        if not session_values:
+            continue
+        highs = [float_or(b.get("high"), 0) for b in session_values if float_or(b.get("high"), 0) > 0]
+        lows = [float_or(b.get("low"), 0) for b in session_values if float_or(b.get("low"), 0) > 0]
+        if highs and lows:
+            return (max(highs), min(lows))
+    return (None, None)
+
+
 def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
     """
     日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
@@ -149,23 +187,9 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
         if symbol in YAHOO_NIKKEI_CANDIDATES:
             # Yahoo 日経のみ: カレンダー前日ではなく前営業日（土日スキップ）。月曜は金曜セッションを参照。
             session_date = _prev_business_day_jst(today)
-            values = _fetch_yahoo_chart(symbol, "15m", "5d")
-            session_values = []
-            for b in values:
-                dt = b.get("datetime", "")
-                try:
-                    d = datetime.fromisoformat(dt)
-                except Exception:
-                    continue
-                if d.date() == session_date and "09:00" <= d.strftime("%H:%M") <= "15:45":
-                    session_values.append(b)
-            if not session_values:
-                return (None, None)
-            highs = [float_or(b.get("high"), 0) for b in session_values if float_or(b.get("high"), 0) > 0]
-            lows = [float_or(b.get("low"), 0) for b in session_values if float_or(b.get("low"), 0) > 0]
-            if not highs or not lows:
-                return (None, None)
-            return (max(highs), min(lows))
+            # 15m は 5d だと不足することがあるため 1mo。日中に足が無い先物は時間帯を段階的に広げる。
+            values = _fetch_yahoo_chart(symbol, "15m", "1mo")
+            return _yahoo_session_high_low_from_15m(values, session_date)
 
         r = requests.get(
             f"{BASE_URL}/time_series",
@@ -197,7 +221,7 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
 def get_15min_ohlc(api_key: str, symbol: str) -> list:
     """15分足を取得（直近30本、新しい順）。日本時間で返す。"""
     if symbol in YAHOO_NIKKEI_CANDIDATES:
-        return _fetch_yahoo_chart(symbol, "15m", "10d")
+        return _fetch_yahoo_chart(symbol, "15m", "1mo")
     r = requests.get(
         f"{BASE_URL}/time_series",
         params={
