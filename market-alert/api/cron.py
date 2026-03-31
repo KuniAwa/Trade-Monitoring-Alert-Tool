@@ -21,6 +21,14 @@ SYMBOLS_DISABLED: set[str] = {"AUD/JPY"}
 
 BASE_URL = "https://api.twelvedata.com"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+# Yahoo は無言の User-Agent だと空レスポンスや 429 になりやすい（サーバーレスからの取得対策）
+YAHOO_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+}
 YAHOO_NIKKEI_CANDIDATES = ["NIY=F", "^N225"]
 INTERVAL_15 = "15min"
 INTERVAL_1H = "1h"
@@ -70,6 +78,7 @@ def _fetch_yahoo_chart(symbol: str, interval: str, range_value: str) -> list[dic
     r = requests.get(
         f"{YAHOO_CHART_URL}/{symbol}",
         params={"interval": interval, "range": range_value},
+        headers=YAHOO_HTTP_HEADERS,
         timeout=30,
     )
     r.raise_for_status()
@@ -233,6 +242,74 @@ def _yahoo_prev_session_hl_fallback_chain(primary: str) -> tuple[float | None, f
     return (None, None)
 
 
+def _yahoo_daily_prev_trading_hl(yahoo_symbol: str) -> tuple[float | None, float | None]:
+    """
+    Yahoo 1d 足で「直近の1つ前の取引日」の高安。
+    日中セッション（9:00–15:45）とは一致しないが、15分足が取得不能なときの最終手段の一つ。
+    """
+    try:
+        rows = _fetch_yahoo_chart(yahoo_symbol, "1d", "10d")
+        if len(rows) < 2:
+            return (None, None)
+        prev = rows[1]
+        h = float_or(prev.get("high"), 0)
+        l = float_or(prev.get("low"), 0)
+        if h > 0 and l > 0 and h >= l:
+            return (h, l)
+    except Exception:
+        pass
+    return (None, None)
+
+
+def _twelvedata_prev_session_hl(api_key: str) -> tuple[float | None, float | None]:
+    """
+    Twelve Data で前営業日 JST 9:00〜15:45 の15分足から高安。ETF・指数シンボルを順に試す。
+    """
+    if not api_key:
+        return (None, None)
+    tz = ZoneInfo("Asia/Tokyo")
+    today = datetime.now(tz).date()
+    session_date = _prev_business_day_jst(today)
+    start_str = f"{session_date.isoformat()}T09:00:00"
+    end_str = f"{session_date.isoformat()}T15:45:00"
+    candidates: list[str] = []
+    for s in get_nikkei_symbol_candidates():
+        if s not in candidates:
+            candidates.append(s)
+    for extra in ("^N225", "NI225", "N225"):
+        if extra not in candidates:
+            candidates.append(extra)
+    for sym in candidates:
+        try:
+            r = requests.get(
+                f"{BASE_URL}/time_series",
+                params={
+                    "symbol": sym,
+                    "interval": INTERVAL_15,
+                    "start_date": start_str,
+                    "end_date": end_str,
+                    "timezone": "Asia/Tokyo",
+                    "apikey": api_key,
+                    "format": "JSON",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("status") == "error":
+                continue
+            values = data.get("values") or []
+            if not values:
+                continue
+            highs = [float_or(b.get("high"), 0) for b in values if float_or(b.get("high"), 0) > 0]
+            lows = [float_or(b.get("low"), 0) for b in values if float_or(b.get("low"), 0) > 0]
+            if highs and lows:
+                return (max(highs), min(lows))
+        except Exception:
+            continue
+    return (None, None)
+
+
 def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
     """
     日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
@@ -245,7 +322,21 @@ def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float
     end_str = f"{yesterday.isoformat()}T15:45:00"
     try:
         if symbol in YAHOO_NIKKEI_CANDIDATES:
-            return _yahoo_prev_session_hl_fallback_chain(symbol)
+            hi, lo = _yahoo_prev_session_hl_fallback_chain(symbol)
+            if hi is not None and lo is not None:
+                return (hi, lo)
+            seen_d: set[str] = set()
+            for sym in ("^N225", symbol):
+                if sym in seen_d:
+                    continue
+                seen_d.add(sym)
+                hi, lo = _yahoo_daily_prev_trading_hl(sym)
+                if hi is not None and lo is not None:
+                    return (hi, lo)
+            hi, lo = _twelvedata_prev_session_hl(api_key)
+            if hi is not None and lo is not None:
+                return (hi, lo)
+            return (None, None)
 
         r = requests.get(
             f"{BASE_URL}/time_series",
@@ -875,11 +966,9 @@ def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
         if prev_high is None or prev_low is None:
             if symbol in YAHOO_NIKKEI_CANDIDATES:
                 detail = (
-                    "前営業日の日中セッション（JST 9:00〜15:45）の高値・安値を、"
-                    "Yahoo Finance の15分足から算出できませんでした。"
+                    "Yahoo Finance（15分足・日足）および Twelve Data（15分足）で、"
+                    "前営業日の高値・安値を取得できませんでした。"
                 )
-                if symbol == "NIY=F":
-                    detail += "（^N225 による代替取得も試行済み）"
             else:
                 detail = (
                     "前日の日中セッション（JST 9:00〜15:45）の高値・安値を、"
