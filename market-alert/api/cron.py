@@ -40,6 +40,8 @@ OUTPUTSIZE_DAY = 3
 # 押し率: 50%以上は除外、33%以内を理想とする
 OSHIRITSU_EXCLUDE_PCT = 50.0
 OSHIRITSU_IDEAL_PCT = 33.0
+# ブレイク開始が特定できないとき、直近この本数の15分足だけで「初ブレイク」を探す（1ヶ月先頭の古いブレイクを避ける）
+BREAKOUT_RECENT_15M_BARS = 128
 
 # アラート・サマリーでのパラボリックSAR: False のとき算定しない（条件からも除外）。True で再有効化。
 USE_PARABOLIC_SAR_IN_ALERTS = False
@@ -615,7 +617,11 @@ def long_breakout_oshiritsu_and_high(
 ) -> tuple[float | None, float | None]:
     """
     ロング: 押し率 (breakout_high - 現在終値) / (breakout_high - breakout_level) と
-    breakout_high（ブレイク後〜直近確定足までの最高値）。失敗時は (None, None)。
+    breakout_high（現在のブレイク局面の高値）。
+
+    ブレイク開始は「直近確定足より前で、最後に終値が breakout_level 以下だった足」の次の足。
+    ウィンドウ内にそれが無い場合のみ、直近 BREAKOUT_RECENT_15M_BARS 本の範囲で
+    初めて high が breakout_level を超えた足にフォールバック（古い月間高を拾わない）。
     """
     if len(ohlc_15) < 2:
         return (None, None)
@@ -623,12 +629,23 @@ def long_breakout_oshiritsu_and_high(
     end_idx = len(chrono) - 2
     if end_idx < 0:
         return (None, None)
-    break_idx = None
-    for i in range(0, end_idx + 1):
-        if float_or(chrono[i].get("high"), 0) > breakout_level:
-            break_idx = i
+    last_below = None
+    for i in range(end_idx, -1, -1):
+        if float_or(chrono[i].get("close"), 0) <= breakout_level:
+            last_below = i
             break
-    if break_idx is None:
+    if last_below is not None:
+        break_idx = last_below + 1
+    else:
+        ws = max(0, end_idx - BREAKOUT_RECENT_15M_BARS)
+        break_idx = None
+        for i in range(ws, end_idx + 1):
+            if float_or(chrono[i].get("high"), 0) > breakout_level:
+                break_idx = i
+                break
+        if break_idx is None:
+            return (None, None)
+    if break_idx > end_idx:
         return (None, None)
     highs = [float_or(chrono[j].get("high"), 0) for j in range(break_idx, end_idx + 1)]
     breakout_high = max(highs) if highs else 0.0
@@ -644,8 +661,9 @@ def short_breakout_oshiritsu_and_low(
     ohlc_15: list, breakout_level: float, current_bar: dict
 ) -> tuple[float | None, float | None]:
     """
-    ショート: 押し率 (現在終値 - breakout_low) / (breakout_level - breakout_low) と
-    breakout_low。失敗時は (None, None)。
+    ショート: 最後に終値が前日安値以上だった足の次の足から、ブレイク後最安値まで。
+    ウィンドウ内にそれが無い場合は直近 BREAKOUT_RECENT_15M_BARS 本で初めて low が
+    breakout_level を下回った足にフォールバック。
     """
     if len(ohlc_15) < 2:
         return (None, None)
@@ -653,13 +671,24 @@ def short_breakout_oshiritsu_and_low(
     end_idx = len(chrono) - 2
     if end_idx < 0:
         return (None, None)
-    break_idx = None
-    for i in range(0, end_idx + 1):
-        lo = float_or(chrono[i].get("low"), 0)
-        if lo > 0 and lo < breakout_level:
-            break_idx = i
+    last_above = None
+    for i in range(end_idx, -1, -1):
+        if float_or(chrono[i].get("close"), 0) >= breakout_level:
+            last_above = i
             break
-    if break_idx is None:
+    if last_above is not None:
+        break_idx = last_above + 1
+    else:
+        ws = max(0, end_idx - BREAKOUT_RECENT_15M_BARS)
+        break_idx = None
+        for i in range(ws, end_idx + 1):
+            lo = float_or(chrono[i].get("low"), 0)
+            if lo > 0 and lo < breakout_level:
+                break_idx = i
+                break
+        if break_idx is None:
+            return (None, None)
+    if break_idx > end_idx:
         return (None, None)
     lows = [float_or(chrono[j].get("low"), 0) for j in range(break_idx, end_idx + 1)]
     breakout_low = min(lows) if lows else 0.0
