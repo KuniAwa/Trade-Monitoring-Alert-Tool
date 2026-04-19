@@ -1,6 +1,6 @@
 # 相場監視アラートツール（Vercel + Twelve Data）
 
-**USD/JPY・EUR/JPY・AUD/JPY**（およびオプションで日経225）を15分ごとに監視し、**前日高値/安値ブレイク** かつ **15分足20MA・パラボリックSAR** に加え、**1時間足の環境認識** と **押し率50%未満** を満たしたときにメールで通知します。監視時間は `settings.json` で変更可能です。自動売買は行いません。
+**USD/JPY・EUR/JPY・AUD/JPY**（およびオプションで日経225）を15分ごとに監視し、**1時間足の EMA20/50 と傾き**、**15分足の ATR バッファ付き前日高安ブレイク**、**初ブレイク足（前足終値）**、**15分足20MA**、**押し率50%未満** を満たしたときにメール通知します（パラボリックSAR は既定でオフ）。アラート本文に **リスク幅・1R/2R 目安** を併記します。平日夜に **相場サマリー** も1通送ります。監視時間は `settings.json` で変更可能です。自動売買は行いません。
 
 - 仕様の詳細は [docs/SPEC.md](docs/SPEC.md) を参照してください。
 
@@ -123,11 +123,24 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" "https://your-project.vercel.ap
 
 ## 注意事項
 
-- **監視対象**: USD/JPY, EUR/JPY, AUD/JPY、日経225先物。**1時間足**で環境認識、**押し率**は33%以内を理想・50%以上は通知対象外。
+- **監視対象**: USD/JPY, EUR/JPY, AUD/JPY、日経225先物。**1時間足 EMA20/50＋傾き**で環境認識。**押し率**は33%以内を理想・50%以上は通知対象外。
 - **前日高値・安値**: 為替は **NY 基準**（America/New_York の日足）。**日経225先物**は **日中セッション終了 15:45 JST** 基準（09:00〜15:45 の15分足から算出）。
-- **Twelve Data**: 日足・15分足・1時間足を取得。SMA・SAR はアプリ内計算。1回の Cron は銘柄数 × 3 リクエスト（日足・15分・1h）。
+- **Twelve Data**: 為替は日足・15分足・1時間足を取得。SMA・EMA・ATR・（任意）SAR はアプリ内計算。1回の Cron のリクエスト数は銘柄数とフォールバックにより変動。
 - **日経225系データソース**: 既定では Yahoo Finance を優先（`NIY=F` → `^N225` の順）。`NIKKEI_SYMBOL` で明示指定すると固定できます。Yahoo で取得できない場合のみ Twelve Data 側候補（`NIKKEI_SYMBOL_CANDIDATES`）を使って解決を試みます。
 - 重複通知の防止は「同一 Cron 実行内で同一銘柄・同一方向は1回まで」です。日をまたぐ重複を防ぐには Vercel KV 等の永続ストアの利用を検討してください（仕様書に記載）。
+
+## Git プッシュ後に Vercel が自動デプロイする場合
+
+リポジトリを Vercel に接続済みなら、**`market-alert/` を Root Directory にしたプロジェクト**で `main`（または設定したブランチ）へ `git push` するだけでビルドが走ります。
+
+```powershell
+cd "c:\Users\kunik\OneDrive\ドキュメント\Apps\Cursor"
+git add market-alert/
+git commit -m "変更内容の説明"
+git push origin main
+```
+
+環境変数を変えたあとは、ダッシュボードから **Redeploy** が必要です。
 
 ## ライセンス
 

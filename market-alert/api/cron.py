@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 相場監視アラート - Vercel Cron エンドポイント
-15分足で前日高値/安値ブレイク + 20MA（+ オプションでパラボリックSAR）条件でメール通知
+15分足で前日高値/安値ブレイク + 20MA（+ オプションでパラボリックSAR）でメール通知。
+1時間足は EMA20/EMA50 と EMA20 の傾きで環境認識、15分足は ATR バッファ付きブレイク、
+初ブレイク足（前足終値が閾値未突破）のみ通知。メールにリスク幅・利確目安を併記。
 """
 import os
 import json
@@ -34,8 +36,19 @@ INTERVAL_15 = "15min"
 INTERVAL_1H = "1h"
 INTERVAL_DAY = "1day"
 OUTPUTSIZE_15 = 30
-OUTPUTSIZE_1H = 25
+OUTPUTSIZE_1H = 120
 OUTPUTSIZE_DAY = 3
+
+# 1時間足トレンド（EMA + 傾き）
+EMA_FAST_1H = 20
+EMA_SLOW_1H = 50
+
+# 15分足ブレイク: 前日高安 ± ATR×係数 を超える終値で成立
+ATR_PERIOD_15 = 14
+BREAKOUT_ATR_MULT = 0.20
+
+# リスクシナリオ: ストップ候補の ATR 倍率（もう一方は前日高/安）
+STOP_ATR_MULT = 1.5
 
 # 押し率: 50%以上は除外、33%以内を理想とする
 OSHIRITSU_EXCLUDE_PCT = 50.0
@@ -391,7 +404,7 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
 
 
 def get_1h_ohlc(api_key: str, symbol: str) -> list:
-    """1時間足を取得（直近25本、新しい順）。日本時間で返す。"""
+    """1時間足を取得（新しい順、本数は OUTPUTSIZE_1H）。日本時間で返す。"""
     if symbol in YAHOO_NIKKEI_CANDIDATES:
         return _fetch_yahoo_chart(symbol, "60m", "1mo")
     r = requests.get(
@@ -522,6 +535,129 @@ def calc_sma(close_prices: list, period: int) -> list[float | None]:
             window = close_prices[i : i + period]
             result.append(sum(window) / period)
     return result
+
+
+def calc_ema_series(closes_asc: list[float], period: int) -> list[float | None]:
+    """
+    終値は古い順。各インデックス i に対応する EMA（i 本目までの系列で算出）。
+    i < period-1 は None。period-1 以降で SMA シード後の EMA。
+    """
+    n = len(closes_asc)
+    if n == 0 or period <= 0:
+        return []
+    alpha = 2.0 / (period + 1)
+    out: list[float | None] = [None] * n
+    if n < period:
+        return out
+    seed = sum(closes_asc[:period]) / period
+    out[period - 1] = seed
+    ema = seed
+    for i in range(period, n):
+        ema = alpha * closes_asc[i] + (1 - alpha) * ema
+        out[i] = ema
+    return out
+
+
+def calc_atr_series(
+    highs_asc: list[float],
+    lows_asc: list[float],
+    closes_asc: list[float],
+    period: int,
+) -> list[float | None]:
+    """Wilder ATR。古い順。TR は前足終値参照。period 本目の TR 平均で初期 ATR、その後 Wilder 平滑化。"""
+    n = len(closes_asc)
+    if n == 0 or period <= 0:
+        return []
+    tr: list[float] = []
+    for i in range(n):
+        if i == 0:
+            tr.append(highs_asc[i] - lows_asc[i])
+        else:
+            pc = closes_asc[i - 1]
+            tr.append(
+                max(
+                    highs_asc[i] - lows_asc[i],
+                    abs(highs_asc[i] - pc),
+                    abs(lows_asc[i] - pc),
+                )
+            )
+    out: list[float | None] = [None] * n
+    if n < period + 1:
+        return out
+    first_atr = sum(tr[1 : period + 1]) / period
+    out[period] = first_atr
+    prev_atr = first_atr
+    for i in range(period + 1, n):
+        prev_atr = (prev_atr * (period - 1) + tr[i]) / period
+        out[i] = prev_atr
+    return out
+
+
+def trend_1h_ema_slope(
+    ohlc_1h: list,
+) -> tuple[bool, bool, dict]:
+    """
+    提案1: 直近確定1時間足で、終値と EMA20/EMA50 の順位 + EMA20 の3本連続傾き。
+    戻り値: (trend_up, trend_down, details)
+    """
+    details: dict = {
+        "close_1h": 0.0,
+        "ema20_1h": 0.0,
+        "ema50_1h": 0.0,
+        "ema20_prev1": None,
+        "ema20_prev2": None,
+    }
+    if not ohlc_1h or len(ohlc_1h) < 3:
+        return False, False, details
+    chrono = list(reversed(ohlc_1h))
+    n = len(chrono)
+    L = n - 2
+    # EMA50 の初値は index period-1。傾きに L-2 が必要。
+    if L < EMA_SLOW_1H - 1 or L < 2:
+        return False, False, details
+    closes_asc = [float_or(b.get("close"), 0) for b in chrono]
+    ema20 = calc_ema_series(closes_asc, EMA_FAST_1H)
+    ema50 = calc_ema_series(closes_asc, EMA_SLOW_1H)
+    c = closes_asc[L]
+    e20 = ema20[L] if L < len(ema20) else None
+    e50 = ema50[L] if L < len(ema50) else None
+    e20_m1 = ema20[L - 1] if L - 1 >= 0 and L - 1 < len(ema20) else None
+    e20_m2 = ema20[L - 2] if L - 2 >= 0 and L - 2 < len(ema20) else None
+    if c <= 0 or e20 is None or e50 is None or e20_m1 is None or e20_m2 is None:
+        return False, False, details
+    details["close_1h"] = c
+    details["ema20_1h"] = e20
+    details["ema50_1h"] = e50
+    details["ema20_prev1"] = e20_m1
+    details["ema20_prev2"] = e20_m2
+    up_stack = c > e20 > e50
+    down_stack = c < e20 < e50
+    slope_up = e20 > e20_m1 > e20_m2
+    slope_down = e20 < e20_m1 < e20_m2
+    return up_stack and slope_up, down_stack and slope_down, details
+
+
+def atr15_last_closed(ohlc_15: list) -> float:
+    """直近確定15分足時点の ATR(14)。算定不能時は 0。"""
+    if not ohlc_15 or len(ohlc_15) < ATR_PERIOD_15 + 3:
+        return 0.0
+    chrono = list(reversed(ohlc_15))
+    highs = [float_or(b.get("high"), 0) for b in chrono]
+    lows = [float_or(b.get("low"), 0) for b in chrono]
+    closes = [float_or(b.get("close"), 0) for b in chrono]
+    atr_list = calc_atr_series(highs, lows, closes, ATR_PERIOD_15)
+    idx = len(chrono) - 2
+    if idx < 0 or idx >= len(atr_list):
+        return 0.0
+    v = atr_list[idx]
+    return float(v) if v is not None and v > 0 else 0.0
+
+
+def prev_closed_bar(ohlc_15: list) -> dict | None:
+    """最新確定足の1本前の確定足（API 順で values[2]）。"""
+    if len(ohlc_15) < 3:
+        return None
+    return ohlc_15[2]
 
 
 def calc_parabolic_sar(
@@ -707,6 +843,50 @@ def previous_day_from_daily(daily_values: list) -> dict | None:
     return daily_values[1]
 
 
+def risk_scenario_long(close: float, prev_high: float, atr: float) -> dict:
+    """ロング想定のストップ候補・リスク幅・1R/2R 目安。"""
+    stop_prev = prev_high
+    stop_atr = close - STOP_ATR_MULT * atr if atr > 0 else None
+    if stop_atr is not None:
+        stop_primary = max(stop_prev, stop_atr)
+    else:
+        stop_primary = stop_prev
+    risk = close - stop_primary
+    if risk <= 0:
+        risk = max(close - prev_high, 1e-12)
+        stop_primary = close - risk
+    return {
+        "stop_prev_hl": stop_prev,
+        "stop_atr": stop_atr,
+        "stop_primary": stop_primary,
+        "risk_width": risk,
+        "tp1": close + risk,
+        "tp2": close + 2 * risk,
+    }
+
+
+def risk_scenario_short(close: float, prev_low: float, atr: float) -> dict:
+    """ショート想定のストップ候補・リスク幅・1R/2R 目安。"""
+    stop_prev = prev_low
+    stop_atr = close + STOP_ATR_MULT * atr if atr > 0 else None
+    if stop_atr is not None:
+        stop_primary = min(stop_prev, stop_atr)
+    else:
+        stop_primary = stop_prev
+    risk = stop_primary - close
+    if risk <= 0:
+        risk = max(prev_low - close, 1e-12)
+        stop_primary = close + risk
+    return {
+        "stop_prev_hl": stop_prev,
+        "stop_atr": stop_atr,
+        "stop_primary": stop_primary,
+        "risk_width": risk,
+        "tp1": close - risk,
+        "tp2": close - 2 * risk,
+    }
+
+
 def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545: bool = False) -> list:
     """
     1銘柄について条件を評価し、成立したアラートのリストを返す。
@@ -738,6 +918,17 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
     if close <= 0:
         return []
 
+    atr15 = atr15_last_closed(ohlc_15)
+    buf = BREAKOUT_ATR_MULT * atr15 if atr15 > 0 else 0.0
+    long_threshold = prev_high + buf
+    short_threshold = prev_low - buf
+
+    # 提案3: 初ブレイク（前足終値が閾値を越えていない）かつ今足終値が閾値突破
+    bar_prev = prev_closed_bar(ohlc_15)
+    prev_close = float_or(bar_prev.get("close"), 0) if bar_prev else None
+    first_break_long = prev_close is not None and prev_close <= long_threshold and close > long_threshold
+    first_break_short = prev_close is not None and prev_close >= short_threshold and close < short_threshold
+
     # 15分足 20MA
     close_prices = [float_or(b.get("close"), 0) for b in ohlc_15]
     sma_list = calc_sma(close_prices, 20)
@@ -754,14 +945,17 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
         idx_last_closed = len(sar_list) - 2
         sar_val = sar_list[idx_last_closed] if 0 <= idx_last_closed < len(sar_list) and sar_list[idx_last_closed] is not None else 0
 
-    # 1時間足 環境認識（直近確定1h足: 終値 vs 20MA）
-    closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
-    sma_1h = calc_sma(closes_1h, 20)
-    bar_1h = last_closed_bar(ohlc_1h)
-    close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
-    ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
-    trend_1h_up = close_1h > ma20_1h and ma20_1h > 0
-    trend_1h_down = close_1h < ma20_1h and ma20_1h > 0
+    # 提案1: 1時間足 EMA20/50 + EMA20 の3本連続傾き
+    trend_1h_up, trend_1h_down, trend_details = trend_1h_ema_slope(ohlc_1h)
+    close_1h = float(trend_details.get("close_1h", 0) or 0)
+    ema20_1h = float(trend_details.get("ema20_1h", 0) or 0)
+    ema50_1h = float(trend_details.get("ema50_1h", 0) or 0)
+
+    prev_hl_label = (
+        "前営業日・JST日中セッション（9:00〜15:45）の高安"
+        if use_jst_session_1545
+        else "NY日足基準の前日高安"
+    )
 
     alerts = []
 
@@ -771,14 +965,22 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
         sar_ok_long = (sar_val <= 0 or close > sar_val)
         sar_ok_short = (sar_val <= 0 or close < sar_val)
 
-    # ロング: 前日高値ブレイク + 15分20MA + (SAR) + 1h上昇環境 + 押し率50%未満
-    if close > prev_high and ma20 > 0 and close > ma20 and sar_ok_long and trend_1h_up:
+    # ロング: ATRバッファ付き前日高突破 + 初ブレイク + 15分20MA + (SAR) + 1h上昇環境 + 押し率50%未満
+    if (
+        close > long_threshold
+        and first_break_long
+        and ma20 > 0
+        and close > ma20
+        and sar_ok_long
+        and trend_1h_up
+    ):
         oshiritsu_pct, breakout_high = long_breakout_oshiritsu_and_high(ohlc_15, prev_high, bar)
         if oshiritsu_pct is None:
             pass
         elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
             pass
         else:
+            rs = risk_scenario_long(close, prev_high, atr15)
             alerts.append({
                 "direction": "long",
                 "symbol": symbol,
@@ -790,18 +992,37 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "datetime": bar_dt,
                 "oshiritsu_pct": round(oshiritsu_pct, 1),
                 "breakout_high": breakout_high,
-                "ma20_1h": ma20_1h,
                 "close_1h": close_1h,
+                "ema20_1h": ema20_1h,
+                "ema50_1h": ema50_1h,
+                "atr15": atr15,
+                "long_threshold": long_threshold,
+                "short_threshold": short_threshold,
+                "prev_hl_label": prev_hl_label,
+                "stop_prev_hl": rs["stop_prev_hl"],
+                "stop_atr": rs["stop_atr"],
+                "stop_primary": rs["stop_primary"],
+                "risk_width": rs["risk_width"],
+                "tp1": rs["tp1"],
+                "tp2": rs["tp2"],
             })
 
-    # ショート: 前日安値ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
-    if close < prev_low and ma20 > 0 and close < ma20 and sar_ok_short and trend_1h_down:
+    # ショート: ATRバッファ付き前日安突破 + 初ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
+    if (
+        close < short_threshold
+        and first_break_short
+        and ma20 > 0
+        and close < ma20
+        and sar_ok_short
+        and trend_1h_down
+    ):
         oshiritsu_pct, breakout_low = short_breakout_oshiritsu_and_low(ohlc_15, prev_low, bar)
         if oshiritsu_pct is None:
             pass
         elif oshiritsu_pct >= OSHIRITSU_EXCLUDE_PCT:
             pass
         else:
+            rs = risk_scenario_short(close, prev_low, atr15)
             alerts.append({
                 "direction": "short",
                 "symbol": symbol,
@@ -813,8 +1034,19 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "datetime": bar_dt,
                 "oshiritsu_pct": round(oshiritsu_pct, 1),
                 "breakout_low": breakout_low,
-                "ma20_1h": ma20_1h,
                 "close_1h": close_1h,
+                "ema20_1h": ema20_1h,
+                "ema50_1h": ema50_1h,
+                "atr15": atr15,
+                "long_threshold": long_threshold,
+                "short_threshold": short_threshold,
+                "prev_hl_label": prev_hl_label,
+                "stop_prev_hl": rs["stop_prev_hl"],
+                "stop_atr": rs["stop_atr"],
+                "stop_primary": rs["stop_primary"],
+                "risk_width": rs["risk_width"],
+                "tp1": rs["tp1"],
+                "tp2": rs["tp2"],
             })
 
     return alerts
@@ -851,6 +1083,15 @@ def send_alert_email(alert: dict) -> None:
     else:
         breakout_line = f"  ブレイク後最安値 : {alert.get('breakout_low', '-')}"
 
+    prev_hl = alert.get("prev_hl_label") or "前日高安"
+    atr_v = alert.get("atr15")
+    stop_atr = alert.get("stop_atr")
+    stop_atr_line = (
+        f"  ATR×{STOP_ATR_MULT}ストップ : {stop_atr}"
+        if stop_atr is not None
+        else f"  ATR×{STOP_ATR_MULT}ストップ : （ATR 算定なし）"
+    )
+
     body = f"""
 ━━━━━━━━━━━━━━━━━━━━━━
   相場監視アラート
@@ -865,22 +1106,36 @@ def send_alert_email(alert: dict) -> None:
 ────────────────────
   終値        : {alert['close']}
   20MA        : {alert['ma20']}
+  ATR({ATR_PERIOD_15})   : {atr_v if atr_v is not None else '-'}
+  ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {alert.get('long_threshold', '-')}
+  ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {alert.get('short_threshold', '-')}
 
 ────────────────────
-  前日（NY基準）
+  参照高安（{prev_hl}）
 ────────────────────
   前日高値    : {alert['prev_high']}
   前日安値    : {alert['prev_low']}
 
 ────────────────────
-  1時間足（環境認識）
+  1時間足（EMA 環境認識）
 ────────────────────
   終値        : {alert.get('close_1h', '-')}
-  20MA        : {alert.get('ma20_1h', '-')}
+  EMA({EMA_FAST_1H})    : {alert.get('ema20_1h', '-')}
+  EMA({EMA_SLOW_1H})    : {alert.get('ema50_1h', '-')}
 
 ────────────────────
   押し率      : {oshi if oshi is not None else '-'}% {oshi_note}
 {breakout_line}
+────────────────────
+  リスクシナリオ（参考）
+────────────────────
+  ストップ（前日高/安）: {alert.get('stop_prev_hl', '-')}
+{stop_atr_line}
+  採用ストップ（タイト寄り）: {alert.get('stop_primary', '-')}
+  リスク幅    : {alert.get('risk_width', '-')}
+  利確目安 1R : {alert.get('tp1', '-')}
+  利確目安 2R : {alert.get('tp2', '-')}
+
 ────────────────────
 
 ※ 自動売買は行いません。判断はご自身でお願いします。
@@ -959,16 +1214,46 @@ def build_snapshot(
     sma_list = calc_sma(close_prices, 20)
     ma20 = sma_list[1] if len(sma_list) > 1 and sma_list[1] is not None else 0
 
-    # 1時間足 20MA
-    closes_1h = [float_or(b.get("close"), 0) for b in ohlc_1h]
-    sma_1h = calc_sma(closes_1h, 20)
-    bar_1h = last_closed_bar(ohlc_1h)
-    close_1h = float_or(bar_1h.get("close"), 0) if bar_1h else 0
-    ma20_1h = sma_1h[1] if len(sma_1h) > 1 and sma_1h[1] is not None else 0
+    atr15 = atr15_last_closed(ohlc_15)
+    buf = BREAKOUT_ATR_MULT * atr15 if atr15 > 0 else 0.0
+    long_threshold = prev_high + buf
+    short_threshold = prev_low - buf
 
-    # 押し率・ブレイク後最高値（ロング想定。ショートはサマリーでは出さない）
+    trend_1h_up, trend_1h_down, trend_details = trend_1h_ema_slope(ohlc_1h)
+    close_1h = float(trend_details.get("close_1h", 0) or 0)
+    ema20_1h = float(trend_details.get("ema20_1h", 0) or 0)
+    ema50_1h = float(trend_details.get("ema50_1h", 0) or 0)
+
+    bar_prev = prev_closed_bar(ohlc_15)
+    prev_close = float_or(bar_prev.get("close"), 0) if bar_prev else None
+    first_break_long = (
+        prev_close is not None and prev_close <= long_threshold and close > long_threshold
+    )
+    first_break_short = (
+        prev_close is not None and prev_close >= short_threshold and close < short_threshold
+    )
+
+    if trend_1h_up:
+        trend_1h_ja = "上昇（EMA順位+傾きOK）"
+    elif trend_1h_down:
+        trend_1h_ja = "下降（EMA順位+傾きOK）"
+    else:
+        trend_1h_ja = "中立/レンジ寄り"
+
+    prev_hl_label = (
+        "前営業日・JST日中セッション高安"
+        if use_jst_session_1545
+        else "NY日足基準の前日高安"
+    )
+
+    # 押し率・ブレイク後高安
     oshiritsu_raw, breakout_high_val = long_breakout_oshiritsu_and_high(ohlc_15, prev_high, bar)
     oshiritsu_long = round(oshiritsu_raw, 1) if oshiritsu_raw is not None else None
+    oshiritsu_raw_s, breakout_low_val = short_breakout_oshiritsu_and_low(ohlc_15, prev_low, bar)
+    oshiritsu_short = round(oshiritsu_raw_s, 1) if oshiritsu_raw_s is not None else None
+
+    rs_long = risk_scenario_long(close, prev_high, atr15)
+    rs_short = risk_scenario_short(close, prev_low, atr15)
 
     return {
         "symbol": symbol,
@@ -979,9 +1264,29 @@ def build_snapshot(
         "prev_low": prev_low,
         "ma20_15m": ma20,
         "close_1h": close_1h,
-        "ma20_1h": ma20_1h,
+        "ema20_1h": ema20_1h,
+        "ema50_1h": ema50_1h,
+        "trend_1h_ja": trend_1h_ja,
+        "trend_1h_up": trend_1h_up,
+        "trend_1h_down": trend_1h_down,
+        "atr15": atr15,
+        "long_threshold": long_threshold,
+        "short_threshold": short_threshold,
+        "first_break_long": first_break_long,
+        "first_break_short": first_break_short,
+        "prev_hl_label": prev_hl_label,
         "oshiritsu_long": oshiritsu_long,
+        "oshiritsu_short": oshiritsu_short,
         "breakout_high": breakout_high_val,
+        "breakout_low": breakout_low_val,
+        "rs_long_stop_primary": rs_long["stop_primary"],
+        "rs_long_risk": rs_long["risk_width"],
+        "rs_long_tp1": rs_long["tp1"],
+        "rs_long_tp2": rs_long["tp2"],
+        "rs_short_stop_primary": rs_short["stop_primary"],
+        "rs_short_risk": rs_short["risk_width"],
+        "rs_short_tp1": rs_short["tp1"],
+        "rs_short_tp2": rs_short["tp2"],
     }
 
 
@@ -1059,6 +1364,7 @@ def send_summary_email(
 
     for snap in snapshots:
         dt_display = _format_datetime_display(snap.get("datetime", ""))
+        phl = snap.get("prev_hl_label", "前日高安")
         lines.append("────────────────────")
         lines.append(f"  {snap['label']} ({snap['symbol']})")
         lines.append("────────────────────")
@@ -1067,20 +1373,48 @@ def send_summary_email(
         lines.append("  15分足")
         lines.append(f"    終値        : {snap['close']}")
         lines.append(f"    20MA        : {snap['ma20_15m']}")
+        lines.append(f"    ATR({ATR_PERIOD_15})   : {snap.get('atr15', '-')}")
+        lines.append(
+            f"    ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {snap.get('long_threshold', '-')}"
+        )
+        lines.append(
+            f"    ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {snap.get('short_threshold', '-')}"
+        )
+        lines.append(
+            f"    初ブレイク相当（前足終値×閾値） ロング: {snap.get('first_break_long')} / ショート: {snap.get('first_break_short')}"
+        )
         lines.append("")
-        lines.append("  前日")
+        lines.append(f"  参照高安（{phl}）")
         lines.append(f"    前日高値    : {snap['prev_high']}")
         lines.append(f"    前日安値    : {snap['prev_low']}")
         lines.append("")
-        lines.append("  1時間足（環境認識）")
-        lines.append(f"    終値        : {snap['close_1h']}")
-        lines.append(f"    20MA        : {snap['ma20_1h']}")
+        lines.append("  1時間足（EMA 環境認識）")
+        lines.append(f"    トレンド判定 : {snap.get('trend_1h_ja', '-')}")
+        lines.append(f"    終値        : {snap.get('close_1h', '-')}")
+        lines.append(f"    EMA({EMA_FAST_1H})    : {snap.get('ema20_1h', '-')}")
+        lines.append(f"    EMA({EMA_SLOW_1H})    : {snap.get('ema50_1h', '-')}")
         lines.append("")
         oshi = snap.get("oshiritsu_long")
         bh = snap.get("breakout_high")
         lines.append("  押し率（ロング想定）")
         lines.append(f"    押し率      : {oshi if oshi is not None else '-'}%")
         lines.append(f"    ブレイク後最高値 : {bh if bh is not None else '-'}")
+        lines.append("")
+        oshi_s = snap.get("oshiritsu_short")
+        bl = snap.get("breakout_low")
+        lines.append("  押し率（ショート想定）")
+        lines.append(f"    押し率      : {oshi_s if oshi_s is not None else '-'}%")
+        lines.append(f"    ブレイク後最安値 : {bl if bl is not None else '-'}")
+        lines.append("")
+        lines.append("  リスクシナリオ参考（現在終値ベース・ロング）")
+        lines.append(f"    採用ストップ : {snap.get('rs_long_stop_primary', '-')}")
+        lines.append(f"    リスク幅     : {snap.get('rs_long_risk', '-')}")
+        lines.append(f"    利確 1R / 2R : {snap.get('rs_long_tp1', '-')} / {snap.get('rs_long_tp2', '-')}")
+        lines.append("")
+        lines.append("  リスクシナリオ参考（現在終値ベース・ショート）")
+        lines.append(f"    採用ストップ : {snap.get('rs_short_stop_primary', '-')}")
+        lines.append(f"    リスク幅     : {snap.get('rs_short_risk', '-')}")
+        lines.append(f"    利確 1R / 2R : {snap.get('rs_short_tp1', '-')} / {snap.get('rs_short_tp2', '-')}")
         lines.append("")
 
     if nikkei_notes:
