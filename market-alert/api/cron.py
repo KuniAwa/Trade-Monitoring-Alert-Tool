@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
+import math
 import requests
 
 # 停止中の銘柄（再開時は set から削除するのみ）
@@ -1060,6 +1061,23 @@ def _format_datetime_display(dt_str: str) -> str:
     return f"{s} JST" if s else dt_str
 
 
+def _fmt_mail_num(value, decimals: int = 4) -> str:
+    """メール本文用。小数点以下 decimals 位まで。None・非数は '-'。"""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if math.isnan(x) or math.isinf(x):
+            return "-"
+        return f"{x:.{decimals}f}"
+    return str(value)
+
+
 def send_alert_email(alert: dict) -> None:
     """1件のアラートをメール送信。"""
     from_addr = get_env("ALERT_MAIL_FROM")
@@ -1077,17 +1095,21 @@ def send_alert_email(alert: dict) -> None:
     subject = f"[相場アラート] {alert['label']} {direction_ja} - {dt_display}"
 
     oshi = alert.get("oshiritsu_pct")
-    oshi_note = f"（理想: {OSHIRITSU_IDEAL_PCT}%以内）" if (oshi is not None and oshi <= OSHIRITSU_IDEAL_PCT) else ""
+    oshi_note = (
+        f"（理想: {_fmt_mail_num(OSHIRITSU_IDEAL_PCT)}%以内）"
+        if (oshi is not None and oshi <= OSHIRITSU_IDEAL_PCT)
+        else ""
+    )
     if alert.get("direction") == "long":
-        breakout_line = f"  ブレイク後最高値 : {alert.get('breakout_high', '-')}"
+        breakout_line = f"  ブレイク後最高値 : {_fmt_mail_num(alert.get('breakout_high'))}"
     else:
-        breakout_line = f"  ブレイク後最安値 : {alert.get('breakout_low', '-')}"
+        breakout_line = f"  ブレイク後最安値 : {_fmt_mail_num(alert.get('breakout_low'))}"
 
     prev_hl = alert.get("prev_hl_label") or "前日高安"
     atr_v = alert.get("atr15")
     stop_atr = alert.get("stop_atr")
     stop_atr_line = (
-        f"  ATR×{STOP_ATR_MULT}ストップ : {stop_atr}"
+        f"  ATR×{STOP_ATR_MULT}ストップ : {_fmt_mail_num(stop_atr)}"
         if stop_atr is not None
         else f"  ATR×{STOP_ATR_MULT}ストップ : （ATR 算定なし）"
     )
@@ -1104,37 +1126,37 @@ def send_alert_email(alert: dict) -> None:
 ────────────────────
   15分足
 ────────────────────
-  終値        : {alert['close']}
-  20MA        : {alert['ma20']}
-  ATR({ATR_PERIOD_15})   : {atr_v if atr_v is not None else '-'}
-  ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {alert.get('long_threshold', '-')}
-  ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {alert.get('short_threshold', '-')}
+  終値        : {_fmt_mail_num(alert.get('close'))}
+  20MA        : {_fmt_mail_num(alert.get('ma20'))}
+  ATR({ATR_PERIOD_15})   : {_fmt_mail_num(atr_v)}
+  ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(alert.get('long_threshold'))}
+  ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(alert.get('short_threshold'))}
 
 ────────────────────
   参照高安（{prev_hl}）
 ────────────────────
-  前日高値    : {alert['prev_high']}
-  前日安値    : {alert['prev_low']}
+  前日高値    : {_fmt_mail_num(alert.get('prev_high'))}
+  前日安値    : {_fmt_mail_num(alert.get('prev_low'))}
 
 ────────────────────
   1時間足（EMA 環境認識）
 ────────────────────
-  終値        : {alert.get('close_1h', '-')}
-  EMA({EMA_FAST_1H})    : {alert.get('ema20_1h', '-')}
-  EMA({EMA_SLOW_1H})    : {alert.get('ema50_1h', '-')}
+  終値        : {_fmt_mail_num(alert.get('close_1h'))}
+  EMA({EMA_FAST_1H})    : {_fmt_mail_num(alert.get('ema20_1h'))}
+  EMA({EMA_SLOW_1H})    : {_fmt_mail_num(alert.get('ema50_1h'))}
 
 ────────────────────
-  押し率      : {oshi if oshi is not None else '-'}% {oshi_note}
+  押し率      : {_fmt_mail_num(oshi)}% {oshi_note}
 {breakout_line}
 ────────────────────
   リスクシナリオ（参考）
 ────────────────────
-  ストップ（前日高/安）: {alert.get('stop_prev_hl', '-')}
+  ストップ（前日高/安）: {_fmt_mail_num(alert.get('stop_prev_hl'))}
 {stop_atr_line}
-  採用ストップ（タイト寄り）: {alert.get('stop_primary', '-')}
-  リスク幅    : {alert.get('risk_width', '-')}
-  利確目安 1R : {alert.get('tp1', '-')}
-  利確目安 2R : {alert.get('tp2', '-')}
+  採用ストップ（タイト寄り）: {_fmt_mail_num(alert.get('stop_primary'))}
+  リスク幅    : {_fmt_mail_num(alert.get('risk_width'))}
+  利確目安 1R : {_fmt_mail_num(alert.get('tp1'))}
+  利確目安 2R : {_fmt_mail_num(alert.get('tp2'))}
 
 ────────────────────
 
@@ -1371,50 +1393,54 @@ def send_summary_email(
         lines.append(f"  条件判定足時刻 : {dt_display}")
         lines.append("")
         lines.append("  15分足")
-        lines.append(f"    終値        : {snap['close']}")
-        lines.append(f"    20MA        : {snap['ma20_15m']}")
-        lines.append(f"    ATR({ATR_PERIOD_15})   : {snap.get('atr15', '-')}")
+        lines.append(f"    終値        : {_fmt_mail_num(snap.get('close'))}")
+        lines.append(f"    20MA        : {_fmt_mail_num(snap.get('ma20_15m'))}")
+        lines.append(f"    ATR({ATR_PERIOD_15})   : {_fmt_mail_num(snap.get('atr15'))}")
         lines.append(
-            f"    ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {snap.get('long_threshold', '-')}"
+            f"    ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(snap.get('long_threshold'))}"
         )
         lines.append(
-            f"    ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {snap.get('short_threshold', '-')}"
+            f"    ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(snap.get('short_threshold'))}"
         )
         lines.append(
             f"    初ブレイク相当（前足終値×閾値） ロング: {snap.get('first_break_long')} / ショート: {snap.get('first_break_short')}"
         )
         lines.append("")
         lines.append(f"  参照高安（{phl}）")
-        lines.append(f"    前日高値    : {snap['prev_high']}")
-        lines.append(f"    前日安値    : {snap['prev_low']}")
+        lines.append(f"    前日高値    : {_fmt_mail_num(snap.get('prev_high'))}")
+        lines.append(f"    前日安値    : {_fmt_mail_num(snap.get('prev_low'))}")
         lines.append("")
         lines.append("  1時間足（EMA 環境認識）")
         lines.append(f"    トレンド判定 : {snap.get('trend_1h_ja', '-')}")
-        lines.append(f"    終値        : {snap.get('close_1h', '-')}")
-        lines.append(f"    EMA({EMA_FAST_1H})    : {snap.get('ema20_1h', '-')}")
-        lines.append(f"    EMA({EMA_SLOW_1H})    : {snap.get('ema50_1h', '-')}")
+        lines.append(f"    終値        : {_fmt_mail_num(snap.get('close_1h'))}")
+        lines.append(f"    EMA({EMA_FAST_1H})    : {_fmt_mail_num(snap.get('ema20_1h'))}")
+        lines.append(f"    EMA({EMA_SLOW_1H})    : {_fmt_mail_num(snap.get('ema50_1h'))}")
         lines.append("")
         oshi = snap.get("oshiritsu_long")
         bh = snap.get("breakout_high")
         lines.append("  押し率（ロング想定）")
-        lines.append(f"    押し率      : {oshi if oshi is not None else '-'}%")
-        lines.append(f"    ブレイク後最高値 : {bh if bh is not None else '-'}")
+        lines.append(f"    押し率      : {_fmt_mail_num(oshi)}%")
+        lines.append(f"    ブレイク後最高値 : {_fmt_mail_num(bh)}")
         lines.append("")
         oshi_s = snap.get("oshiritsu_short")
         bl = snap.get("breakout_low")
         lines.append("  押し率（ショート想定）")
-        lines.append(f"    押し率      : {oshi_s if oshi_s is not None else '-'}%")
-        lines.append(f"    ブレイク後最安値 : {bl if bl is not None else '-'}")
+        lines.append(f"    押し率      : {_fmt_mail_num(oshi_s)}%")
+        lines.append(f"    ブレイク後最安値 : {_fmt_mail_num(bl)}")
         lines.append("")
         lines.append("  リスクシナリオ参考（現在終値ベース・ロング）")
-        lines.append(f"    採用ストップ : {snap.get('rs_long_stop_primary', '-')}")
-        lines.append(f"    リスク幅     : {snap.get('rs_long_risk', '-')}")
-        lines.append(f"    利確 1R / 2R : {snap.get('rs_long_tp1', '-')} / {snap.get('rs_long_tp2', '-')}")
+        lines.append(f"    採用ストップ : {_fmt_mail_num(snap.get('rs_long_stop_primary'))}")
+        lines.append(f"    リスク幅     : {_fmt_mail_num(snap.get('rs_long_risk'))}")
+        lines.append(
+            f"    利確 1R / 2R : {_fmt_mail_num(snap.get('rs_long_tp1'))} / {_fmt_mail_num(snap.get('rs_long_tp2'))}"
+        )
         lines.append("")
         lines.append("  リスクシナリオ参考（現在終値ベース・ショート）")
-        lines.append(f"    採用ストップ : {snap.get('rs_short_stop_primary', '-')}")
-        lines.append(f"    リスク幅     : {snap.get('rs_short_risk', '-')}")
-        lines.append(f"    利確 1R / 2R : {snap.get('rs_short_tp1', '-')} / {snap.get('rs_short_tp2', '-')}")
+        lines.append(f"    採用ストップ : {_fmt_mail_num(snap.get('rs_short_stop_primary'))}")
+        lines.append(f"    リスク幅     : {_fmt_mail_num(snap.get('rs_short_risk'))}")
+        lines.append(
+            f"    利確 1R / 2R : {_fmt_mail_num(snap.get('rs_short_tp1'))} / {_fmt_mail_num(snap.get('rs_short_tp2'))}"
+        )
         lines.append("")
 
     if nikkei_notes:
