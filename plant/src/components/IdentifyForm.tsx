@@ -80,14 +80,34 @@ export function IdentifyForm() {
 
       <div>
         <label className="mb-2 block text-sm font-medium">写真</label>
-        <input
-          type="file"
-          accept="image/*"
-          className="w-full text-sm"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-        />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="cursor-pointer rounded-lg border border-forest-800/20 bg-white px-3 py-2 text-center text-sm">
+            撮影して選ぶ
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+          <label className="cursor-pointer rounded-lg border border-forest-800/20 bg-white px-3 py-2 text-center text-sm">
+            ライブラリから選ぶ
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+        </div>
+        {file && (
+          <p className="mt-2 text-xs text-forest-800/70">
+            選択中: {file.name}
+          </p>
+        )}
         <p className="mt-1 text-xs text-forest-800/50">
-          1枚、同一個体。カメラ撮影・写真ライブラリのどちらも選べます。JPEG/PNG 推奨。撮影直後の HEIC も試せます。写真は保存されません。
+          1枚、同一個体。JPEG/PNG 推奨。撮影直後の HEIC も試せます。写真は保存されません。
         </p>
       </div>
 
