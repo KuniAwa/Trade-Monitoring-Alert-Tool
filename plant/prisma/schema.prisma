@@ -1,0 +1,50 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Identification {
+  id            String  @id @default(cuid())
+  capturedMonth Int? // 1-12
+  location      String?
+  habitat       String? // 林床 / 湿地 など
+  userNote      String?
+  organ         String? // Pl@ntNet 用: flower, leaf, fruit, ... / auto
+  plantNetProject String @default("k-world-flora")
+
+  /// 将来サムネイルのみ DB に残す拡張用（現状は常に null）
+  thumbnailBase64 String? @db.Text
+
+  plantNetRawJson String? @db.Text
+
+  selectedCandidateId String?
+  finalNote            String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  candidates Candidate[]
+
+  @@index([createdAt])
+}
+
+model Candidate {
+  id                 String  @id @default(cuid())
+  identification     Identification @relation(fields: [identificationId], references: [id], onDelete: Cascade)
+  identificationId   String
+  scientificName     String
+  family             String?
+  commonNameJa       String?
+  description        String? @db.Text
+  plantNetScore      Float
+  rerankScore        Float?
+  rerankReason       String? @db.Text
+  rank               Int
+  plantNetSpeciesJson String? @db.Text
+
+  @@index([identificationId])
+}

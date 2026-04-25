@@ -1,0 +1,15 @@
+{
+  "name": "山野草 識別",
+  "short_name": "山野草",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f0f7f2",
+  "theme_color": "#1e3326",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
