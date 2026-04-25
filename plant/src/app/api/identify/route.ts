@@ -21,6 +21,19 @@ function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
+function parseKnownCommonNames(speciesJson: string): string[] {
+  try {
+    const raw = JSON.parse(speciesJson) as { commonNames?: unknown };
+    if (!Array.isArray(raw.commonNames)) return [];
+    return raw.commonNames
+      .map((x) => (typeof x === "string" ? x.trim() : ""))
+      .filter((x) => x.length > 0)
+      .slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
 export async function POST(request: Request) {
   if (!process.env.PLANTNET_API_KEY) {
     return NextResponse.json(
@@ -102,7 +115,13 @@ export async function POST(request: Request) {
     }
   });
 
-  const created: { id: string; scientificName: string; family: string | null; plantNetScore: number }[] = [];
+  const created: {
+    id: string;
+    scientificName: string;
+    family: string | null;
+    plantNetScore: number;
+    knownCommonNames: string[];
+  }[] = [];
   for (let i = 0; i < tops.length; i++) {
     const t = tops[i];
     const c = await prisma.candidate.create({
@@ -119,7 +138,8 @@ export async function POST(request: Request) {
       id: c.id,
       scientificName: t.scientificName,
       family: t.family,
-      plantNetScore: t.score
+      plantNetScore: t.score,
+      knownCommonNames: parseKnownCommonNames(t.speciesJson)
     });
   }
 
@@ -129,7 +149,8 @@ export async function POST(request: Request) {
       id: c.id,
       scientificName: c.scientificName,
       family: c.family,
-      plantNetScore: c.plantNetScore
+      plantNetScore: c.plantNetScore,
+      knownCommonNames: c.knownCommonNames
     }))
   };
 

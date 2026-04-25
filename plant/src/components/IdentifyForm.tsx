@@ -83,12 +83,11 @@ export function IdentifyForm() {
         <input
           type="file"
           accept="image/*"
-          capture="environment"
           className="w-full text-sm"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />
         <p className="mt-1 text-xs text-forest-800/50">
-          1枚、同一個体。JPEG/PNG 推奨。撮影直後の HEIC も試せます。写真は保存されません。
+          1枚、同一個体。カメラ撮影・写真ライブラリのどちらも選べます。JPEG/PNG 推奨。撮影直後の HEIC も試せます。写真は保存されません。
         </p>
       </div>
 

@@ -12,6 +12,7 @@ export type EnrichInput = {
     scientificName: string;
     family: string | null;
     plantNetScore: number;
+    knownCommonNames: string[];
   }>;
 };
 
@@ -29,12 +30,14 @@ type EnrichResponseJson = {
 
 const SYSTEM = `あなたは山野草と植物分類の補助アシスタントです。ユーザーに渡す Pl@ntNet の識別候補（学名・スコア）と、撮影地・季節・生息環境のメタ情報に基づき、
 候補を信頼度の順に再ランクし、各候補について日本の利用者向けの和名（一般的な通称。不明なら null）と、簡潔な説明（2〜4文。生育環境・特徴・季節感・混同注意など）を付けてください。
+knownCommonNames に英語名がある場合は、日本語として自然な訳語を commonNameJa に入れてください（カタカナ訳・一般名の訳語を優先）。
 絶対に推測で学名を作らず、与えた学名一覧に対応する行のみ返してください。有毒・可食性は誤用防止のため断定せず、必要なら「要専門確認」と併記してください。`;
 
 function buildUserPrompt(input: EnrichInput): string {
   const c = input.context;
   const lines = input.candidates.map(
-    (x) => `- id=${x.id} 学名: ${x.scientificName} 科: ${x.family ?? "不明"} Pl@ntNetスコア: ${x.plantNetScore.toFixed(4)}`
+    (x) =>
+      `- id=${x.id} 学名: ${x.scientificName} 科: ${x.family ?? "不明"} Pl@ntNetスコア: ${x.plantNetScore.toFixed(4)} knownCommonNames: ${x.knownCommonNames.length > 0 ? x.knownCommonNames.join(", ") : "(なし)"}`
   );
   return [
     "## メタ情報",
