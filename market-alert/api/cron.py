@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
 import math
+from statistics import median
 import requests
 
 # 停止中の銘柄（再開時は set から削除するのみ）
@@ -59,6 +60,11 @@ BREAKOUT_RECENT_15M_BARS = 128
 
 # アラート・サマリーでのパラボリックSAR: False のとき算定しない（条件からも除外）。True で再有効化。
 USE_PARABOLIC_SAR_IN_ALERTS = False
+
+# 日経（NIY=F）出来高: 同時刻帯中央値との比較（案B）。倍率・日数は settings.json で上書き可。
+NIKEI_VOLUME_SYMBOL = "NIY=F"
+NIKEI_VOLUME_MULT = 1.5
+NIKEI_VOLUME_LOOKBACK_DAYS = 10
 
 
 def get_env(name: str, default: str = "") -> str:
@@ -110,20 +116,23 @@ def _fetch_yahoo_chart(symbol: str, interval: str, range_value: str) -> list[dic
     highs = quote.get("high") or []
     lows = quote.get("low") or []
     closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
     if not timestamps:
         raise ValueError(f"No timestamps from Yahoo Finance for {symbol}: {payload}")
 
     tz = ZoneInfo("Asia/Tokyo")
     rows: list[dict] = []
-    n = min(len(timestamps), len(opens), len(highs), len(lows), len(closes))
+    n = min(len(timestamps), len(opens), len(highs), len(lows), len(closes), len(volumes))
     for i in range(n):
         o = opens[i]
         h = highs[i]
         l = lows[i]
         c = closes[i]
+        v = volumes[i]
         if o is None or h is None or l is None or c is None:
             continue
         dt = datetime.fromtimestamp(int(timestamps[i]), tz)
+        vol = float(v) if v is not None else 0.0
         rows.append(
             {
                 "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -131,6 +140,7 @@ def _fetch_yahoo_chart(symbol: str, interval: str, range_value: str) -> list[dic
                 "high": str(h),
                 "low": str(l),
                 "close": str(c),
+                "volume": str(vol),
             }
         )
     if not rows:
@@ -514,6 +524,141 @@ def is_within_monitor_window(settings: dict) -> bool:
     return now >= start or now <= end
 
 
+def nikkei_volume_settings(settings: dict) -> tuple[float, int]:
+    """settings.json の nikkei_volume を読む。未設定時は定数の既定値。"""
+    nv = settings.get("nikkei_volume") or {}
+    try:
+        mult = float(nv.get("mult", NIKKEI_VOLUME_MULT))
+    except (TypeError, ValueError):
+        mult = NIKKEI_VOLUME_MULT
+    try:
+        days = int(nv.get("lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS))
+    except (TypeError, ValueError):
+        days = NIKKEI_VOLUME_LOOKBACK_DAYS
+    return max(0.1, mult), max(1, min(days, 30))
+
+
+def _parse_bar_datetime_jst(dt_str: str) -> datetime | None:
+    if not dt_str:
+        return None
+    try:
+        d = datetime.fromisoformat(dt_str.strip()[:19])
+    except Exception:
+        return None
+    if d.tzinfo is None:
+        return d.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+    return d.astimezone(ZoneInfo("Asia/Tokyo"))
+
+
+def nikkei_volume_same_slot_median(
+    ohlc_15: list,
+    current_bar: dict,
+    lookback_days: int,
+) -> tuple[float | None, float | None]:
+    """
+    案B: 確定15分足の出来高と、過去 lookback_days 営業日分の同一時刻（時:分）帯の出来高中央値。
+    """
+    curr_dt = _parse_bar_datetime_jst(current_bar.get("datetime", ""))
+    if not curr_dt:
+        return None, None
+    vol_curr = float_or(current_bar.get("volume"), 0)
+    if vol_curr <= 0:
+        return None, None
+
+    slot_h, slot_m = curr_dt.hour, curr_dt.minute
+    curr_date = curr_dt.date()
+    by_date: dict[date, float] = {}
+
+    for b in reversed(ohlc_15):
+        dt = _parse_bar_datetime_jst(b.get("datetime", ""))
+        if not dt:
+            continue
+        if dt.date() >= curr_date:
+            continue
+        if dt.hour != slot_h or dt.minute != slot_m:
+            continue
+        if dt.weekday() >= 5:
+            continue
+        v = float_or(b.get("volume"), 0)
+        if v <= 0:
+            continue
+        by_date[dt.date()] = v
+
+    if not by_date:
+        return None, vol_curr
+
+    dates_desc = sorted(by_date.keys(), reverse=True)[:lookback_days]
+    samples = [by_date[d] for d in dates_desc]
+    if not samples:
+        return None, vol_curr
+    return float(median(samples)), vol_curr
+
+
+def curr_dt_slot_label(bar: dict) -> str:
+    dt = _parse_bar_datetime_jst(bar.get("datetime", ""))
+    if not dt:
+        return "時刻不明"
+    return dt.strftime("%H:%M")
+
+
+def build_nikkei_volume_info(
+    ohlc_15: list,
+    current_bar: dict,
+    symbol: str,
+    mult: float,
+    lookback_days: int,
+) -> dict:
+    """
+    日経向け出来高の参考情報（通知の必須条件にはしない）。
+    NIY=F のみ同時刻帯比較。^N225 等は取得不可として注記。
+    """
+    base = {
+        "volume_available": False,
+        "volume_curr": None,
+        "volume_median": None,
+        "volume_ratio": None,
+        "volume_mult": mult,
+        "volume_lookback_days": lookback_days,
+        "volume_surge": False,
+        "volume_thin": False,
+        "volume_status_ja": "",
+    }
+    if symbol != NIKKEI_VOLUME_SYMBOL:
+        base["volume_status_ja"] = f"出来高: 取得不可（{symbol}。{NIKEI_VOLUME_SYMBOL} のみ比較）"
+        return base
+
+    med, curr = nikkei_volume_same_slot_median(ohlc_15, current_bar, lookback_days)
+    if curr is None or curr <= 0:
+        base["volume_status_ja"] = "出来高: データなし（NIY=F）"
+        return base
+
+    base["volume_curr"] = curr
+    if med is None or med <= 0:
+        base["volume_status_ja"] = (
+            f"出来高: 同時刻帯比較データ不足（過去{lookback_days}営業日・{curr_dt_slot_label(current_bar)}）"
+        )
+        return base
+
+    ratio = curr / med
+    surge = ratio >= mult
+    base["volume_available"] = True
+    base["volume_median"] = med
+    base["volume_ratio"] = ratio
+    base["volume_surge"] = surge
+    base["volume_thin"] = not surge
+    mult_s = _fmt_mail_num(mult)
+    ratio_s = _fmt_mail_num(ratio)
+    if surge:
+        base["volume_status_ja"] = (
+            f"✅ 出来高伴う（同時刻帯中央値の {mult_s}x 以上、倍率 {ratio_s}x）"
+        )
+    else:
+        base["volume_status_ja"] = (
+            f"⚠ 出来高薄い（倍率 {ratio_s}x、基準 {mult_s}x 未満）"
+        )
+    return base
+
+
 # --- アプリ内計算: SMA と パラボリックSAR（Twelve Data の指標APIを使わない） ---
 
 def calc_sma(close_prices: list, period: int) -> list[float | None]:
@@ -893,6 +1038,9 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
     1銘柄について条件を評価し、成立したアラートのリストを返す。
     use_jst_session_1545=True のとき前日高値・安値は JST 日中セッション（09:00〜15:45）基準。
     """
+    settings = load_settings()
+    vol_mult, vol_lookback = nikkei_volume_settings(settings)
+
     if use_jst_session_1545:
         prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
         if prev_high is None or prev_low is None or prev_high <= 0 or prev_low <= 0:
@@ -982,7 +1130,7 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
             pass
         else:
             rs = risk_scenario_long(close, prev_high, atr15)
-            alerts.append({
+            alert_row = {
                 "direction": "long",
                 "symbol": symbol,
                 "label": label,
@@ -1006,7 +1154,12 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "risk_width": rs["risk_width"],
                 "tp1": rs["tp1"],
                 "tp2": rs["tp2"],
-            })
+            }
+            if use_jst_session_1545:
+                alert_row.update(
+                    build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback)
+                )
+            alerts.append(alert_row)
 
     # ショート: ATRバッファ付き前日安突破 + 初ブレイク + 15分20MA + (SAR) + 1h下降環境 + 押し率50%未満
     if (
@@ -1024,7 +1177,7 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
             pass
         else:
             rs = risk_scenario_short(close, prev_low, atr15)
-            alerts.append({
+            alert_row = {
                 "direction": "short",
                 "symbol": symbol,
                 "label": label,
@@ -1048,7 +1201,12 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
                 "risk_width": rs["risk_width"],
                 "tp1": rs["tp1"],
                 "tp2": rs["tp2"],
-            })
+            }
+            if use_jst_session_1545:
+                alert_row.update(
+                    build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback)
+                )
+            alerts.append(alert_row)
 
     return alerts
 
@@ -1078,6 +1236,42 @@ def _fmt_mail_num(value, decimals: int = 4) -> str:
     return str(value)
 
 
+def _fmt_mail_int(value) -> str:
+    """メール本文用の出来高など整数表示。"""
+    if value is None:
+        return "-"
+    try:
+        return f"{int(round(float(value))):,}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _nikkei_volume_email_block(alert: dict) -> str:
+    """日経向け出来高ブロック（volume_status_ja があるときのみ）。"""
+    status = alert.get("volume_status_ja")
+    if not status:
+        return ""
+    med = alert.get("volume_median")
+    curr = alert.get("volume_curr")
+    ratio = alert.get("volume_ratio")
+    mult = alert.get("volume_mult", NIKKEI_VOLUME_MULT)
+    days = alert.get("volume_lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS)
+    if med is not None and ratio is not None:
+        detail = (
+            f"  出来高      : {_fmt_mail_int(curr)}"
+            f"（同時刻帯中央値: {_fmt_mail_int(med)} / 倍率: {_fmt_mail_num(ratio)}x）\n"
+        )
+    else:
+        detail = f"  出来高      : {_fmt_mail_int(curr) if curr is not None else '-'}\n"
+    return f"""
+────────────────────
+  出来高（{NIKEI_VOLUME_SYMBOL}・同時刻帯・過去{days}営業日）
+────────────────────
+{detail}  出来高判定  : {status}
+  基準倍率    : {_fmt_mail_num(mult)}x（settings.json の nikkei_volume.mult）
+"""
+
+
 def send_alert_email(alert: dict) -> None:
     """1件のアラートをメール送信。"""
     from_addr = get_env("ALERT_MAIL_FROM")
@@ -1092,7 +1286,9 @@ def send_alert_email(alert: dict) -> None:
 
     dt_display = _format_datetime_display(alert.get("datetime", ""))
     direction_ja = "前日高値ブレイク（ロング）" if alert["direction"] == "long" else "前日安値ブレイク（ショート）"
-    subject = f"[相場アラート] {alert['label']} {direction_ja} - {dt_display}"
+    vol_tag = "[volSurge] " if alert.get("volume_surge") else ""
+    subject = f"[相場アラート] {vol_tag}{alert['label']} {direction_ja} - {dt_display}"
+    vol_block = _nikkei_volume_email_block(alert)
 
     oshi = alert.get("oshiritsu_pct")
     oshi_note = (
@@ -1131,7 +1327,7 @@ def send_alert_email(alert: dict) -> None:
   ATR({ATR_PERIOD_15})   : {_fmt_mail_num(atr_v)}
   ロング閾値（高+{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(alert.get('long_threshold'))}
   ショート閾値（安−{BREAKOUT_ATR_MULT}×ATR）: {_fmt_mail_num(alert.get('short_threshold'))}
-
+{vol_block}
 ────────────────────
   参照高安（{prev_hl}）
 ────────────────────
@@ -1277,7 +1473,10 @@ def build_snapshot(
     rs_long = risk_scenario_long(close, prev_high, atr15)
     rs_short = risk_scenario_short(close, prev_low, atr15)
 
-    return {
+    settings = load_settings()
+    vol_mult, vol_lookback = nikkei_volume_settings(settings)
+
+    snap = {
         "symbol": symbol,
         "label": label,
         "datetime": bar_dt,
@@ -1310,6 +1509,9 @@ def build_snapshot(
         "rs_short_tp1": rs_short["tp1"],
         "rs_short_tp2": rs_short["tp2"],
     }
+    if use_jst_session_1545:
+        snap.update(build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback))
+    return snap
 
 
 def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
@@ -1405,6 +1607,20 @@ def send_summary_email(
         lines.append(
             f"    初ブレイク相当（前足終値×閾値） ロング: {snap.get('first_break_long')} / ショート: {snap.get('first_break_short')}"
         )
+        if snap.get("volume_status_ja"):
+            vol_days = snap.get("volume_lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS)
+            lines.append(f"    出来高（{NIKEI_VOLUME_SYMBOL}・同時刻帯・過去{vol_days}営業日）")
+            if snap.get("volume_median") is not None and snap.get("volume_ratio") is not None:
+                lines.append(
+                    f"      出来高      : {_fmt_mail_int(snap.get('volume_curr'))}"
+                    f"（中央値: {_fmt_mail_int(snap.get('volume_median'))} / 倍率: {_fmt_mail_num(snap.get('volume_ratio'))}x）"
+                )
+            else:
+                lines.append(f"      出来高      : {_fmt_mail_int(snap.get('volume_curr'))}")
+            lines.append(f"      出来高判定  : {snap.get('volume_status_ja')}")
+            lines.append(
+                f"      基準倍率    : {_fmt_mail_num(snap.get('volume_mult'))}x"
+            )
         lines.append("")
         lines.append(f"  参照高安（{phl}）")
         lines.append(f"    前日高値    : {_fmt_mail_num(snap.get('prev_high'))}")

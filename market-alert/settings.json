@@ -2,5 +2,9 @@
   "monitor": {
     "start_jst": "09:00",
     "end_jst": "23:00"
+  },
+  "nikkei_volume": {
+    "mult": 1.5,
+    "lookback_days": 10
   }
 }
