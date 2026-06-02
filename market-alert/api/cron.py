@@ -1473,10 +1473,7 @@ def build_snapshot(
     rs_long = risk_scenario_long(close, prev_high, atr15)
     rs_short = risk_scenario_short(close, prev_low, atr15)
 
-    settings = load_settings()
-    vol_mult, vol_lookback = nikkei_volume_settings(settings)
-
-    snap = {
+    return {
         "symbol": symbol,
         "label": label,
         "datetime": bar_dt,
@@ -1509,9 +1506,6 @@ def build_snapshot(
         "rs_short_tp1": rs_short["tp1"],
         "rs_short_tp2": rs_short["tp2"],
     }
-    if use_jst_session_1545:
-        snap.update(build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback))
-    return snap
 
 
 def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
@@ -1607,20 +1601,6 @@ def send_summary_email(
         lines.append(
             f"    初ブレイク相当（前足終値×閾値） ロング: {snap.get('first_break_long')} / ショート: {snap.get('first_break_short')}"
         )
-        if snap.get("volume_status_ja"):
-            vol_days = snap.get("volume_lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS)
-            lines.append(f"    出来高（{NIKEI_VOLUME_SYMBOL}・同時刻帯・過去{vol_days}営業日）")
-            if snap.get("volume_median") is not None and snap.get("volume_ratio") is not None:
-                lines.append(
-                    f"      出来高      : {_fmt_mail_int(snap.get('volume_curr'))}"
-                    f"（中央値: {_fmt_mail_int(snap.get('volume_median'))} / 倍率: {_fmt_mail_num(snap.get('volume_ratio'))}x）"
-                )
-            else:
-                lines.append(f"      出来高      : {_fmt_mail_int(snap.get('volume_curr'))}")
-            lines.append(f"      出来高判定  : {snap.get('volume_status_ja')}")
-            lines.append(
-                f"      基準倍率    : {_fmt_mail_num(snap.get('volume_mult'))}x"
-            )
         lines.append("")
         lines.append(f"  参照高安（{phl}）")
         lines.append(f"    前日高値    : {_fmt_mail_num(snap.get('prev_high'))}")
