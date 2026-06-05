@@ -6,6 +6,7 @@
 初ブレイク足（前足終値が閾値未突破）のみ通知。メールにリスク幅・利確目安を併記。
 """
 import os
+import sys
 import json
 import smtplib
 import ssl
@@ -71,11 +72,41 @@ def get_env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _parse_twelvedata_json(data: object, symbol: str, context: str) -> dict:
+    """Twelve Data の JSON を検証。status=error や values 欠落を分かりやすい例外にする。"""
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid Twelve Data response for {symbol} ({context})")
+    if data.get("status") == "error":
+        msg = data.get("message") or data.get("code") or str(data)[:200]
+        raise ValueError(f"Twelve Data API error for {symbol} ({context}): {msg}")
+    return data
+
+
+def _twelvedata_get(path: str, params: dict, symbol: str, context: str) -> dict:
+    """Twelve Data GET。レート制限っぽい応答のとき1回だけ短い待機後にリトライ。"""
+    url = f"{BASE_URL}{path}"
+    last_err: Exception | None = None
+    for attempt in range(2):
+        try:
+            r = requests.get(url, params=params, timeout=30)
+            r.raise_for_status()
+            data = _parse_twelvedata_json(r.json(), symbol, context)
+            return data
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            if attempt == 0 and ("limit" in msg or "429" in msg or "credit" in msg or "minute" in msg):
+                time.sleep(2.5)
+                continue
+            break
+    raise last_err if last_err else ValueError(f"Twelve Data request failed for {symbol} ({context})")
+
+
 def get_daily_ohlc(api_key: str, symbol: str) -> list:
     """日足を取得（直近3本、新しい順）。前日高値・安値は NY 基準のため America/New_York で取得。"""
-    r = requests.get(
-        f"{BASE_URL}/time_series",
-        params={
+    data = _twelvedata_get(
+        "/time_series",
+        {
             "symbol": symbol,
             "interval": INTERVAL_DAY,
             "outputsize": OUTPUTSIZE_DAY,
@@ -83,12 +114,11 @@ def get_daily_ohlc(api_key: str, symbol: str) -> list:
             "apikey": api_key,
             "format": "JSON",
         },
-        timeout=30,
+        symbol,
+        "daily",
     )
-    r.raise_for_status()
-    data = r.json()
     if "values" not in data:
-        raise ValueError(f"No values in daily response for {symbol}: {data}")
+        raise ValueError(f"No values in daily response for {symbol}: {str(data)[:200]}")
     return data["values"]
 
 
@@ -399,9 +429,9 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
     """15分足を取得（直近30本、新しい順）。日本時間で返す。"""
     if symbol in YAHOO_NIKKEI_CANDIDATES:
         return _fetch_yahoo_chart(symbol, "15m", "1mo")
-    r = requests.get(
-        f"{BASE_URL}/time_series",
-        params={
+    data = _twelvedata_get(
+        "/time_series",
+        {
             "symbol": symbol,
             "interval": INTERVAL_15,
             "outputsize": OUTPUTSIZE_15,
@@ -409,12 +439,11 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
             "apikey": api_key,
             "format": "JSON",
         },
-        timeout=30,
+        symbol,
+        "15min",
     )
-    r.raise_for_status()
-    data = r.json()
     if "values" not in data:
-        raise ValueError(f"No values in 15min response for {symbol}: {data}")
+        raise ValueError(f"No values in 15min response for {symbol}: {str(data)[:200]}")
     return data["values"]
 
 
@@ -422,9 +451,9 @@ def get_1h_ohlc(api_key: str, symbol: str) -> list:
     """1時間足を取得（新しい順、本数は OUTPUTSIZE_1H）。日本時間で返す。"""
     if symbol in YAHOO_NIKKEI_CANDIDATES:
         return _fetch_yahoo_chart(symbol, "60m", "1mo")
-    r = requests.get(
-        f"{BASE_URL}/time_series",
-        params={
+    data = _twelvedata_get(
+        "/time_series",
+        {
             "symbol": symbol,
             "interval": INTERVAL_1H,
             "outputsize": OUTPUTSIZE_1H,
@@ -432,12 +461,11 @@ def get_1h_ohlc(api_key: str, symbol: str) -> list:
             "apikey": api_key,
             "format": "JSON",
         },
-        timeout=30,
+        symbol,
+        "1h",
     )
-    r.raise_for_status()
-    data = r.json()
     if "values" not in data:
-        raise ValueError(f"No values in 1h response for {symbol}: {data}")
+        raise ValueError(f"No values in 1h response for {symbol}: {str(data)[:200]}")
     return data["values"]
 
 
@@ -1798,9 +1826,15 @@ def run_checks() -> dict:
         errors.append(f"summary: {str(e)[:200]}")
 
     symbol_errors = [e for e in errors if not e.startswith("summary")]
-    if symbol_errors and sent == 0 and len(symbol_errors) >= len(symbols):
-        return {"ok": False, "error": "; ".join(symbol_errors), "sent": 0}
-    return {"ok": True, "sent": sent, "error": None, "skipped": errors if errors else None}
+    degraded = bool(symbol_errors and sent == 0 and len(symbol_errors) >= len(symbols))
+    return {
+        "ok": True,
+        "sent": sent,
+        "error": None,
+        "skipped": errors if errors else None,
+        "degraded": degraded,
+        "warnings": symbol_errors if degraded else None,
+    }
 
 
 def _safe_error_msg(s: str | None) -> str:
@@ -1828,12 +1862,15 @@ class handler(BaseHTTPRequestHandler):
 
             if result.get("error"):
                 result["error"] = _safe_error_msg(result.get("error"))
-            status = 200 if result.get("ok") else 500
+            # Cron はデータ取得の一時失敗でも HTTP 500 にしない（本文の degraded / warnings を参照）
+            status = 200 if result.get("ok") else 503
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             body = json.dumps(result, ensure_ascii=False).encode("utf-8")
             self.wfile.write(body)
+            if status != 200 or result.get("degraded"):
+                self._log_cron_issue(status, result)
         except Exception as outer:
             try:
                 self.send_response(500)
@@ -1844,5 +1881,17 @@ class handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _log_cron_issue(self, status: int, result: dict) -> None:
+        err = result.get("error") or result.get("warnings") or result.get("skipped")
+        sys.stderr.write(
+            f"[cron] HTTP {status} ok={result.get('ok')} sent={result.get('sent')} detail={err}\n"
+        )
+
     def log_message(self, format, *args):
-        pass
+        # ローカル開発時に 4xx/5xx をコンソールへ（通常の GET ログは抑制）
+        try:
+            status = int(str(args[1]).split()[0])
+        except (IndexError, ValueError):
+            status = 200
+        if status >= 400:
+            sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
