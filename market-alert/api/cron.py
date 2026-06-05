@@ -557,16 +557,19 @@ def is_within_monitor_window(settings: dict) -> bool:
 
 
 def nikkei_volume_settings(settings: dict) -> tuple[float, int]:
-    """settings.json の nikkei_volume を読む。未設定時は定数の既定値。"""
+    """settings.json の nikkei_volume を読む。未設定時は既定値（mult=1.5, days=10）。"""
+    # モジュール定数に依存せずリテラルでフォールバック（デプロイ差分での NameError 防止）
+    default_mult = globals().get("NIKEI_VOLUME_MULT", 1.5)
+    default_days = globals().get("NIKEI_VOLUME_LOOKBACK_DAYS", 10)
     nv = settings.get("nikkei_volume") or {}
     try:
-        mult = float(nv.get("mult", NIKKEI_VOLUME_MULT))
+        mult = float(nv.get("mult", default_mult))
     except (TypeError, ValueError):
-        mult = NIKKEI_VOLUME_MULT
+        mult = float(default_mult)
     try:
-        days = int(nv.get("lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS))
+        days = int(nv.get("lookback_days", default_days))
     except (TypeError, ValueError):
-        days = NIKKEI_VOLUME_LOOKBACK_DAYS
+        days = int(default_days)
     return max(0.1, mult), max(1, min(days, 30))
 
 
@@ -655,8 +658,9 @@ def build_nikkei_volume_info(
         "volume_thin": False,
         "volume_status_ja": "",
     }
-    if symbol != NIKKEI_VOLUME_SYMBOL:
-        base["volume_status_ja"] = f"出来高: 取得不可（{symbol}。{NIKEI_VOLUME_SYMBOL} のみ比較）"
+    vol_symbol = globals().get("NIKEI_VOLUME_SYMBOL", "NIY=F")
+    if symbol != vol_symbol:
+        base["volume_status_ja"] = f"出来高: 取得不可（{symbol}。{vol_symbol} のみ比較）"
         return base
 
     med, curr = nikkei_volume_same_slot_median(ohlc_15, current_bar, lookback_days)
@@ -1094,10 +1098,10 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
     1銘柄について条件を評価し、成立したアラートのリストを返す。
     use_jst_session_1545=True のとき前日高値・安値は JST 日中セッション（09:00〜15:45）基準。
     """
-    settings = load_settings()
-    vol_mult, vol_lookback = nikkei_volume_settings(settings)
-
+    vol_mult = 1.5
+    vol_lookback = 10
     if use_jst_session_1545:
+        vol_mult, vol_lookback = nikkei_volume_settings(load_settings())
         prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
         if prev_high is None or prev_low is None or prev_high <= 0 or prev_low <= 0:
             return []
@@ -1310,8 +1314,8 @@ def _nikkei_volume_email_block(alert: dict) -> str:
     med = alert.get("volume_median")
     curr = alert.get("volume_curr")
     ratio = alert.get("volume_ratio")
-    mult = alert.get("volume_mult", NIKKEI_VOLUME_MULT)
-    days = alert.get("volume_lookback_days", NIKKEI_VOLUME_LOOKBACK_DAYS)
+    mult = alert.get("volume_mult", globals().get("NIKEI_VOLUME_MULT", 1.5))
+    days = alert.get("volume_lookback_days", globals().get("NIKEI_VOLUME_LOOKBACK_DAYS", 10))
     if med is not None and ratio is not None:
         detail = (
             f"  出来高      : {_fmt_mail_int(curr)}"
@@ -1321,7 +1325,7 @@ def _nikkei_volume_email_block(alert: dict) -> str:
         detail = f"  出来高      : {_fmt_mail_int(curr) if curr is not None else '-'}\n"
     return f"""
 ────────────────────
-  出来高（{NIKEI_VOLUME_SYMBOL}・同時刻帯・過去{days}営業日）
+  出来高（{alert.get("symbol", globals().get("NIKEI_VOLUME_SYMBOL", "NIY=F"))}・同時刻帯・過去{days}営業日）
 ────────────────────
 {detail}  出来高判定  : {status}
   基準倍率    : {_fmt_mail_num(mult)}x（settings.json の nikkei_volume.mult）
