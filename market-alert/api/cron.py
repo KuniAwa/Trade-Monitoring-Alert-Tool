@@ -122,13 +122,17 @@ def _fetch_yahoo_chart(symbol: str, interval: str, range_value: str) -> list[dic
 
     tz = ZoneInfo("Asia/Tokyo")
     rows: list[dict] = []
-    n = min(len(timestamps), len(opens), len(highs), len(lows), len(closes), len(volumes))
+    # volume が空配列のとき min に 0 を入れると全行スキップになるため OHLC のみで n を決める
+    length_parts = [len(timestamps), len(opens), len(highs), len(lows), len(closes)]
+    if volumes:
+        length_parts.append(len(volumes))
+    n = min(length_parts)
     for i in range(n):
         o = opens[i]
         h = highs[i]
         l = lows[i]
         c = closes[i]
-        v = volumes[i]
+        v = volumes[i] if i < len(volumes) else None
         if o is None or h is None or l is None or c is None:
             continue
         dt = datetime.fromtimestamp(int(timestamps[i]), tz)
@@ -659,6 +663,30 @@ def build_nikkei_volume_info(
     return base
 
 
+def _safe_nikkei_volume_fields(
+    ohlc_15: list,
+    bar: dict,
+    symbol: str,
+    mult: float,
+    lookback_days: int,
+) -> dict:
+    """出来高付与で例外が出てもアラート本体は送れるようにする。"""
+    try:
+        return build_nikkei_volume_info(ohlc_15, bar, symbol, mult, lookback_days)
+    except Exception as e:
+        return {
+            "volume_available": False,
+            "volume_curr": None,
+            "volume_median": None,
+            "volume_ratio": None,
+            "volume_mult": mult,
+            "volume_lookback_days": lookback_days,
+            "volume_surge": False,
+            "volume_thin": False,
+            "volume_status_ja": f"出来高: 算定エラー（{str(e)[:80]}）",
+        }
+
+
 # --- アプリ内計算: SMA と パラボリックSAR（Twelve Data の指標APIを使わない） ---
 
 def calc_sma(close_prices: list, period: int) -> list[float | None]:
@@ -1157,7 +1185,7 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
             }
             if use_jst_session_1545:
                 alert_row.update(
-                    build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback)
+                    _safe_nikkei_volume_fields(ohlc_15, bar, symbol, vol_mult, vol_lookback)
                 )
             alerts.append(alert_row)
 
@@ -1204,7 +1232,7 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
             }
             if use_jst_session_1545:
                 alert_row.update(
-                    build_nikkei_volume_info(ohlc_15, bar, symbol, vol_mult, vol_lookback)
+                    _safe_nikkei_volume_fields(ohlc_15, bar, symbol, vol_mult, vol_lookback)
                 )
             alerts.append(alert_row)
 
@@ -1707,7 +1735,7 @@ def run_checks() -> dict:
         symbols_nikkei = [s for s in symbols if s[2]]
 
         # FX・日経とも settings.json の監視時間内（既定 09:00〜23:00 JST）で評価。
-        # Twelve Data Minutely 対策のため、FX 処理後に61秒空けてから日経を処理する。
+        # 日経 OHLC は Yahoo のため長い待機は不要。FX 連続呼び出し後に短い間隔のみ入れる。
         for symbol, label, use_jst_1545 in symbols_fx:
             try:
                 alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
@@ -1721,7 +1749,7 @@ def run_checks() -> dict:
             except Exception as e:
                 errors.append(f"{symbol}: {str(e)[:200]}")
         if symbols_nikkei:
-            time.sleep(61)
+            time.sleep(2)
         for symbol, label, use_jst_1545 in symbols_nikkei:
             try:
                 alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
@@ -1769,8 +1797,9 @@ def run_checks() -> dict:
     except Exception as e:
         errors.append(f"summary: {str(e)[:200]}")
 
-    if errors and sent == 0 and len(errors) == len(symbols):
-        return {"ok": False, "error": "; ".join(errors), "sent": 0}
+    symbol_errors = [e for e in errors if not e.startswith("summary")]
+    if symbol_errors and sent == 0 and len(symbol_errors) >= len(symbols):
+        return {"ok": False, "error": "; ".join(symbol_errors), "sent": 0}
     return {"ok": True, "sent": sent, "error": None, "skipped": errors if errors else None}
 
 
