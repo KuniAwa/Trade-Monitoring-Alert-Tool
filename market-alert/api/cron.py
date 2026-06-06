@@ -1568,6 +1568,53 @@ def build_snapshot(
     }
 
 
+def explain_fx_summary_skip(api_key: str, symbol: str, label: str) -> str:
+    """
+    FX（Twelve Data）の build_snapshot が None になった理由を日本語1文にまとめる。
+    """
+    try:
+        daily = get_daily_ohlc(api_key, symbol)
+        prev_day = previous_day_from_daily(daily)
+        if not prev_day:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "Twelve Data の日足（NY基準）を取得できませんでした。"
+            )
+        prev_high = float_or(prev_day.get("high"), 0)
+        prev_low = float_or(prev_day.get("low"), 0)
+        if prev_high <= 0 or prev_low <= 0:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "前日高値・安値が無効です。"
+            )
+        ohlc_15 = get_15min_ohlc(api_key, symbol)
+        if not ohlc_15:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足データが空です。"
+            )
+        bar = last_closed_bar(ohlc_15)
+        if not bar:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足の確定足を取得できませんでした。"
+            )
+        close = float_or(bar.get("close"), 0)
+        if close <= 0:
+            return (
+                f"{label}（{symbol}）をサマリーに含められませんでした。"
+                "15分足の終値が無効です。"
+            )
+        return (
+            f"{label}（{symbol}）をサマリーに含められませんでした（理由は特定できませんでした）。"
+        )
+    except Exception as e:
+        return (
+            f"{label}（{symbol}）をサマリーに含められませんでした。"
+            f"データ取得エラー: {str(e)[:200]}"
+        )
+
+
 def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
     """
     日経（JST 日中セッション高安）の build_snapshot が None になった理由を、
@@ -1618,9 +1665,9 @@ def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
 def send_summary_email(
     snapshots: list[dict],
     now_jst_str: str,
-    nikkei_notes: list[str] | None = None,
+    skip_notes: list[str] | None = None,
 ) -> None:
-    """平日のサマリーメール送信（JST 23:00 頃・1日1通）。nikkei_notes は日経が載らないときの理由行。"""
+    """平日のサマリーメール送信（JST 23:00 頃・1日1通）。skip_notes は載らなかった銘柄の理由行。"""
     from_addr = get_env("ALERT_MAIL_FROM")
     to_addr = get_env("ALERT_MAIL_TO")
     smtp_host = get_env("SMTP_HOST")
@@ -1699,12 +1746,12 @@ def send_summary_email(
         )
         lines.append("")
 
-    if nikkei_notes:
+    if skip_notes:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("  日経がサマリーに含まれない理由")
+        lines.append("  サマリーに含まれない銘柄")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        for note in nikkei_notes:
+        for note in skip_notes:
             lines.append(f"  {note}")
             lines.append("")
         lines.append("")
@@ -1761,8 +1808,10 @@ def run_checks() -> dict:
     seen: set[tuple[str, str]] = set()
     errors: list[str] = []
     within_window = is_within_monitor_window(settings)
+    should_send, summary_group, now_jst_str = should_send_daily_summary()
 
-    if within_window:
+    # 23:00台はサマリー送信と Twelve Data 取得が重なり FX が落ちやすいため、アラートはスキップ
+    if within_window and not should_send:
         symbols_fx = [s for s in symbols if not s[2]]
         symbols_nikkei = [s for s in symbols if s[2]]
 
@@ -1796,33 +1845,39 @@ def run_checks() -> dict:
                 errors.append(f"{symbol}: {str(e)[:200]}")
 
     try:
-        should_send, group, now_jst_str = should_send_daily_summary()
-        if should_send and group and now_jst_str:
-            summary_symbols = list(symbols) if group == "all" else []
+        if should_send and summary_group and now_jst_str:
+            summary_symbols = list(symbols) if summary_group == "all" else []
             snapshots: list[dict] = []
-            nikkei_notes: list[str] = []
+            skip_notes: list[str] = []
             for symbol, label, use_jst_1545 in summary_symbols:
                 try:
                     snap = build_snapshot(api_key, symbol, label, use_jst_1545)
                     if snap:
                         snapshots.append(snap)
                     elif use_jst_1545:
-                        nikkei_notes.append(
+                        skip_notes.append(
                             explain_nikkei_summary_skip(api_key, symbol, label)
+                        )
+                    else:
+                        skip_notes.append(
+                            explain_fx_summary_skip(api_key, symbol, label)
                         )
                 except Exception as e:
                     errors.append(f"summary {symbol}: {str(e)[:150]}")
-                    if use_jst_1545:
-                        nikkei_notes.append(
-                            f"{label}（{symbol}）をサマリーに含められませんでした。"
-                            f"データ取得エラー: {str(e)[:200]}"
-                        )
+                    skip_notes.append(
+                        f"{label}（{symbol}）をサマリーに含められませんでした。"
+                        f"データ取得エラー: {str(e)[:200]}"
+                    )
+                finally:
+                    # FX は Twelve Data を連続で叩かない（サマリーでもレート制限対策）
+                    if not use_jst_1545:
+                        time.sleep(2)
             if snapshots:
                 try:
                     send_summary_email(
                         snapshots,
                         now_jst_str,
-                        nikkei_notes if nikkei_notes else None,
+                        skip_notes if skip_notes else None,
                     )
                 except Exception as e:
                     errors.append(f"summary send: {str(e)[:150]}")
