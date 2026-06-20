@@ -20,9 +20,17 @@ export default async function TradeDetailPage({ params }: { params: { id: string
 
   return (
     <div className="space-y-4">
-      <Link href="/" className="text-xs text-brand">
-        ← 一覧へ
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link href="/" className="text-xs text-brand">
+          ← 一覧へ
+        </Link>
+        <Link
+          href={`/trades/${trade.id}/edit`}
+          className="rounded-full border border-brand px-3 py-1 text-xs font-semibold text-brand active:bg-brand/5"
+        >
+          編集
+        </Link>
+      </div>
 
       <section className="rounded-lg border bg-white p-4">
         <div className="flex items-center gap-2">
@@ -43,6 +51,7 @@ export default async function TradeDetailPage({ params }: { params: { id: string
           <Cell label="決済" value={trade.exitPrice == null ? "保有中" : fmtNum(trade.exitPrice)} />
           <Cell label="数量" value={`${fmtNum(trade.quantity)} 枚`} />
           <Cell label="損切り" value={trade.stopPrice == null ? "-" : fmtNum(trade.stopPrice)} />
+          <Cell label="利確目標" value={trade.takeProfit == null ? "-" : fmtNum(trade.takeProfit)} />
           <Cell
             label="損益"
             value={trade.pnl == null ? "—" : fmtSigned(trade.pnl)}
