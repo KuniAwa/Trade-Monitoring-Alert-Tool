@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/maintenance/prune",
+      "schedule": "0 18 * * *"
+    }
+  ],
+  "functions": {
+    "app/api/analysis/route.ts": {
+      "maxDuration": 90
+    },
+    "app/api/trades/[id]/review/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}

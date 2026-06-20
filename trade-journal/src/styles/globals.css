@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+/* iPhone のセーフエリア対応 */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

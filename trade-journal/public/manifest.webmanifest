@@ -1,0 +1,17 @@
+{
+  "name": "日経先物トレード日誌",
+  "short_name": "トレード日誌",
+  "description": "日経225先物の取引実績記録とAI改善分析",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#1d4ed8",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

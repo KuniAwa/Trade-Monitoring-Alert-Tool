@@ -1,0 +1,99 @@
+// 日経先物トレード日誌 - Neon (PostgreSQL)
+// 実行時は pooled 接続 (DATABASE_URL)、マイグレーションは直結 (DIRECT_URL) を使用。
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// market-alert（日経アラートと同一データ）から投入される時点スナップショット。
+/// 容量削減のため数値は丸めて保存し、ohlc15Json は限定本数の小窓のみ。
+/// 一定日数を過ぎた生OHLCは prune で null 化（pruned=true）する。
+model Signal {
+  id         String   @id @default(cuid())
+  /// 投入時刻（UTC保存）
+  capturedAt DateTime @default(now())
+  /// 判定対象の確定足の時刻（JST文字列を ISO で保存）
+  barTime    DateTime
+  /// "scan"（毎回の定点観測） | "alert"（条件成立） | "summary"（日次）
+  source     String   @default("scan")
+  /// アラート発火方向 "long" | "short" | null（未発火）
+  alertDir   String?
+
+  // --- 価格・現行アラートで使う指標（同一データ由来） ---
+  close          Float
+  prevHigh       Float?
+  prevLow        Float?
+  ma20           Float?
+  atr15          Float?
+  longThreshold  Float?
+  shortThreshold Float?
+  close1h        Float?
+  ema20_1h       Float?
+  ema50_1h       Float?
+  trendUp        Boolean @default(false)
+  trendDown      Boolean @default(false)
+  oshiritsuLong  Float?
+  oshiritsuShort Float?
+  volumeRatio    Float?
+
+  /// 拡張特徴量（RSI/MACD/BB幅/時間帯/ATRレジーム等。現行条件以外の探索用）。圧縮済みオブジェクト
+  featuresJson Json?
+  /// 直近の15分足小窓 [[epochSec,o,h,l,c,v], ...]（容量削減: 限定本数・丸め）。prune で null
+  ohlc15Json   Json?
+  /// 後追いで算出した結果ラベル（1R/2R到達・MAE/MFE・前方リターン等）。再計算可能なため任意
+  outcomeJson  Json?
+
+  /// 生OHLCを間引き済みか（容量削減フラグ）
+  pruned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  trades Trade[]
+
+  @@index([barTime])
+  @@index([source])
+  @@index([alertDir])
+}
+
+/// ユーザーが iPhone から登録する取引実績（仮想取引も含む）。
+model Trade {
+  id         String    @id @default(cuid())
+  entryAt    DateTime
+  exitAt     DateTime?
+  direction  String // "long" | "short"
+  entryPrice Float
+  exitPrice  Float?
+  quantity   Float     @default(1)
+  stopPrice  Float?
+  takeProfit Float?
+
+  /// 損益（円換算は数量×値幅）。未決済は null
+  pnl       Float?
+  /// 何R獲れたか（リスク幅基準）
+  rMultiple Float?
+
+  /// アラート発火を擬似的にエントリー扱いした仮想取引か（母数拡充用）
+  isVirtual Boolean @default(false)
+
+  reason  String? // エントリー根拠メモ
+  emotion String? // メンタル/タグ
+  note    String? // 自由記述
+
+  /// エントリー時点に最も近い Signal と紐付け
+  signalId String?
+  signal   Signal? @relation(fields: [signalId], references: [id], onDelete: SetNull)
+
+  /// AIの取引レビュー結果（構造化）
+  aiReviewJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([entryAt])
+  @@index([isVirtual])
+}
