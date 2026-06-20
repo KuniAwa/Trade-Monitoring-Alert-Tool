@@ -5,6 +5,7 @@ import { generateTradeReview } from "@/lib/aiClient";
 import { fetch15mBars, forwardBarsAfter } from "@/lib/nikkeiData";
 import { computeOutcome } from "@/lib/outcome";
 import { ensureSignalFeatures } from "@/lib/signalFeatureRead";
+import { fmtJstForPrompt } from "@/lib/format";
 import type { Direction, OutcomeLabel } from "@/lib/types";
 import type { TradeReviewInput } from "@/prompts/tradeReview";
 
@@ -43,7 +44,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
 
   const signalForPrompt: TradeReviewInput["signal"] = trade.signal
     ? {
-        barTime: trade.signal.barTime.toISOString(),
+        barTime: fmtJstForPrompt(trade.signal.barTime),
         source: trade.signal.source,
         alertDir: trade.signal.alertDir,
         close: trade.signal.close,
@@ -77,8 +78,8 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     reason: trade.reason,
     emotion: trade.emotion,
     note: trade.note,
-    entryAt: trade.entryAt.toISOString(),
-    exitAt: trade.exitAt ? trade.exitAt.toISOString() : null,
+    entryAt: fmtJstForPrompt(trade.entryAt),
+    exitAt: trade.exitAt ? fmtJstForPrompt(trade.exitAt) : null,
     signal: signalForPrompt,
     outcome
   };

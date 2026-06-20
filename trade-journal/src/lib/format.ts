@@ -14,6 +14,23 @@ export function fmtPct(v: number | null | undefined, decimals = 0): string {
   return `${(v * 100).toFixed(decimals)}%`;
 }
 
+/** AIプロンプト等に渡す用の日本時間フル表記（例: "2026-06-20 14:22 JST"）。 */
+export function fmtJstForPrompt(d: Date | string | null | undefined): string {
+  if (!d) return "";
+  const date = typeof d === "string" ? new Date(d) : d;
+  if (Number.isNaN(date.getTime())) return "";
+  // sv-SE は ISO 風 "YYYY-MM-DD HH:mm:ss" を返すため、JST に変換して利用する
+  const s = date.toLocaleString("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  return `${s} JST`;
+}
+
 export function fmtDateTimeJst(d: Date | string | null | undefined): string {
   if (!d) return "-";
   const date = typeof d === "string" ? new Date(d) : d;
