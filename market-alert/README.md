@@ -70,6 +70,10 @@ Vercel ダッシュボードの **Project → Settings → Environment Variables
 | `SMTP_PASSWORD` | ○ | SMTP 認証パスワード。 |
 | `NIKKEI_SYMBOL` | - | 日経225系シンボルを**1つ**指定。`NIY=F`（先物）または `^N225`（現物指数）を推奨。未設定時は Yahoo Finance 側の候補を優先して自動解決。 |
 | `NIKKEI_SYMBOL_CANDIDATES` | - | Twelve Data 側で試す候補をカンマ区切りで指定（例: `1321,1570`）。通常は未設定で可。 |
+| `TRADE_JOURNAL_INGEST_URL` | - | 別ツール「トレード日誌」への投入先（例: `https://trade-journal.vercel.app/api/ingest`）。設定時のみ日経スナップショットを送信。 |
+| `TRADE_JOURNAL_INGEST_SECRET` | - | トレード日誌側の `INGEST_SECRET` と同じ値。未設定なら送信しない。 |
+
+> **トレード日誌連携（任意）**: 上記2つを設定すると、15分ごとの日経評価時に確定足のスナップショット（アラートと同一データ）をトレード日誌へ送信し、取引実績のAI分析に利用できます。送信は日経のみ・容量削減のため15分足は直近20本に限定・価格は丸めて送ります。連携に失敗してもアラート本体は止まりません。
 
 **CRON_SECRET** の生成例:
 

@@ -1533,8 +1533,12 @@ def build_snapshot(
     rs_long = risk_scenario_long(close, prev_high, atr15)
     rs_short = risk_scenario_short(close, prev_low, atr15)
 
+    # トレード日誌（trade-journal）への投入用に、容量削減した15分足の小窓を同梱する。
+    ohlc15_tail = _compact_ohlc15_tail(ohlc_15)
+
     return {
         "symbol": symbol,
+        "ohlc15_tail": ohlc15_tail,
         "label": label,
         "datetime": bar_dt,
         "close": close,
@@ -1775,6 +1779,115 @@ def send_summary_email(
         server.sendmail(from_addr, [to_addr], msg.as_string())
 
 
+# --- トレード日誌（trade-journal）連携 ---
+# 日経のスナップショットを別ツール（Next.js）へ投入し、後で取引実績の分析に使う。
+# データソースは現行アラートと同一（Yahoo の15分足・1時間足・出来高）。
+# 容量削減のため、15分足の小窓は直近 N 本に限定し、価格は丸めて送る。
+
+TRADE_JOURNAL_MAX_15M_BARS = 20
+
+
+def _compact_ohlc15_tail(ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BARS) -> list:
+    """
+    15分足（新しい順）から直近 max_bars 本だけを取り出し、
+    [[epochSec, open, high, low, close, volume], ...]（古い順・丸め済み）に変換する。
+    """
+    if not ohlc_15:
+        return []
+    head = ohlc_15[: max(1, max_bars)]
+    rows: list[list[float]] = []
+    for b in reversed(head):
+        dt = _parse_bar_datetime_jst(b.get("datetime", ""))
+        if not dt:
+            continue
+        rows.append(
+            [
+                int(dt.timestamp()),
+                round(float_or(b.get("open"), 0.0), 1),
+                round(float_or(b.get("high"), 0.0), 1),
+                round(float_or(b.get("low"), 0.0), 1),
+                round(float_or(b.get("close"), 0.0), 1),
+                int(float_or(b.get("volume"), 0.0)),
+            ]
+        )
+    return rows
+
+
+def _trade_journal_config() -> tuple[str, str]:
+    return get_env("TRADE_JOURNAL_INGEST_URL"), get_env("TRADE_JOURNAL_INGEST_SECRET")
+
+
+def _ingest_payload_from_snap(
+    snap: dict, source: str, alert_dir: str | None, volume_ratio: float | None = None
+) -> dict:
+    """build_snapshot の戻り値を trade-journal の投入ペイロードへ変換する。"""
+    dt = _parse_bar_datetime_jst(snap.get("datetime", ""))
+    bar_time = dt.isoformat() if dt else snap.get("datetime", "")
+    return {
+        "barTime": bar_time,
+        "source": source,
+        "alertDir": alert_dir,
+        "close": snap.get("close"),
+        "prevHigh": snap.get("prev_high"),
+        "prevLow": snap.get("prev_low"),
+        "ma20": snap.get("ma20_15m"),
+        "atr15": snap.get("atr15"),
+        "longThreshold": snap.get("long_threshold"),
+        "shortThreshold": snap.get("short_threshold"),
+        "close1h": snap.get("close_1h"),
+        "ema20_1h": snap.get("ema20_1h"),
+        "ema50_1h": snap.get("ema50_1h"),
+        "trendUp": bool(snap.get("trend_1h_up")),
+        "trendDown": bool(snap.get("trend_1h_down")),
+        "oshiritsuLong": snap.get("oshiritsu_long"),
+        "oshiritsuShort": snap.get("oshiritsu_short"),
+        "volumeRatio": volume_ratio,
+        "ohlc15": snap.get("ohlc15_tail") or [],
+    }
+
+
+def post_trade_journal_snapshot(payload: dict) -> None:
+    """trade-journal の /api/ingest へスナップショットを送る（ベストエフォート）。"""
+    url, secret = _trade_journal_config()
+    if not url or not secret:
+        return
+    try:
+        requests.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {secret}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+    except Exception:
+        # 連携失敗でアラート本体を止めない
+        pass
+
+
+def send_nikkei_snapshot_to_journal(
+    api_key: str, symbol: str, label: str, alerts: list
+) -> None:
+    """日経のスナップショットを trade-journal へ送る。アラート発火時は source=alert。"""
+    url, secret = _trade_journal_config()
+    if not url or not secret:
+        return
+    try:
+        snap = build_snapshot(api_key, symbol, label, True)
+        if not snap:
+            return
+        fired_dirs = [a.get("direction") for a in alerts if a.get("direction")]
+        source = "alert" if fired_dirs else "scan"
+        alert_dir = fired_dirs[0] if fired_dirs else None
+        volume_ratio = next((a.get("volume_ratio") for a in alerts if a.get("volume_ratio")), None)
+        post_trade_journal_snapshot(
+            _ingest_payload_from_snap(snap, source, alert_dir, volume_ratio)
+        )
+    except Exception:
+        pass
+
+
 def run_checks() -> dict:
     """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はアラートのみスキップ。"""
     settings = load_settings()
@@ -1841,6 +1954,8 @@ def run_checks() -> dict:
                     seen.add(key)
                     send_alert_email(a)
                     sent += 1
+                # トレード日誌へスナップショット送信（アラート未発火でも source=scan で蓄積）
+                send_nikkei_snapshot_to_journal(api_key, symbol, label, alerts)
             except Exception as e:
                 errors.append(f"{symbol}: {str(e)[:200]}")
 
@@ -1854,6 +1969,14 @@ def run_checks() -> dict:
                     snap = build_snapshot(api_key, symbol, label, use_jst_1545)
                     if snap:
                         snapshots.append(snap)
+                        # 日次サマリー時点の日経スナップショットもトレード日誌へ送る
+                        if use_jst_1545:
+                            try:
+                                post_trade_journal_snapshot(
+                                    _ingest_payload_from_snap(snap, "summary", None)
+                                )
+                            except Exception:
+                                pass
                     elif use_jst_1545:
                         skip_notes.append(
                             explain_nikkei_summary_skip(api_key, symbol, label)
