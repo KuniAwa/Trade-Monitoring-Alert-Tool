@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NikkeiMarketPanel } from "@/components/NikkeiMarketPanel";
 import { prisma } from "@/lib/prisma";
 import { fmtDateTimeJst, fmtNum, fmtSigned } from "@/lib/format";
 
@@ -39,6 +40,8 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-5">
+      <NikkeiMarketPanel />
+
       <section className="grid grid-cols-2 gap-3">
         <KpiCard label="記録した取引" value={`${kpi.count} 件`} />
         <KpiCard
