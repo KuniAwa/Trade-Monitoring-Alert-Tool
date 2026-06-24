@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { NikkeiMarketSnapshot } from "@/lib/nikkeiSnapshot";
 
 function fmt(v: number | null | undefined, d = 1): string {
@@ -20,7 +20,7 @@ function trendColor(s: NikkeiMarketSnapshot): string {
 
 export function NikkeiMarketPanel() {
   const [snapshot, setSnapshot] = useState<NikkeiMarketSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -43,17 +43,13 @@ export function NikkeiMarketPanel() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   return (
     <section className="rounded-lg border bg-white p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold text-slate-800">日経先物・投資判断用指標</h2>
           <p className="mt-0.5 text-[11px] text-slate-400">
-            アラートツールと同一データ（Yahoo 15分足・1時間足）。更新ボタンでその時点を取得。
+            アラートツールと同一データ（Yahoo 15分足・1時間足）。「更新」でその時点を取得。
           </p>
         </div>
         <button
@@ -68,8 +64,10 @@ export function NikkeiMarketPanel() {
 
       {error && <p className="mb-2 rounded bg-red-50 p-2 text-xs text-down">{error}</p>}
 
-      {!snapshot && loading && (
-        <p className="py-4 text-center text-sm text-slate-500">指標を取得しています…</p>
+      {!snapshot && !loading && !error && (
+        <p className="py-4 text-center text-sm text-slate-500">
+          「更新」ボタンを押すと、現在時点の指標を取得します。
+        </p>
       )}
 
       {snapshot && (
@@ -80,7 +78,9 @@ export function NikkeiMarketPanel() {
             <span>取得: {snapshot.fetchedAtJst}</span>
           </div>
 
-          <div className={`rounded-lg px-3 py-2 ${snapshot.trend1hUp ? "bg-green-50" : snapshot.trend1hDown ? "bg-red-50" : "bg-slate-50"}`}>
+          <div
+            className={`rounded-lg px-3 py-2 ${snapshot.trend1hUp ? "bg-green-50" : snapshot.trend1hDown ? "bg-red-50" : "bg-slate-50"}`}
+          >
             <div className="text-[11px] text-slate-500">1時間足トレンド判定（サマリーメールと同じ）</div>
             <div className={`mt-0.5 text-base font-bold ${trendColor(snapshot)}`}>{snapshot.trend1hJa}</div>
           </div>
@@ -89,8 +89,21 @@ export function NikkeiMarketPanel() {
             <Row label="終値" value={fmt(snapshot.close)} />
             <Row label="20MA" value={fmt(snapshot.ma20_15m)} />
             <Row label="ATR(14)" value={fmt(snapshot.atr15)} highlight />
-            <Row label={`ロング閾値（高+0.2×ATR）`} value={fmt(snapshot.longThreshold)} />
-            <Row label={`ショート閾値（安−0.2×ATR）`} value={fmt(snapshot.shortThreshold)} />
+            <Row label={snapshot.vwapLabel} value={fmt(snapshot.vwap)} />
+            <Row
+              label="終値 vs VWAP"
+              value={
+                snapshot.vwap == null
+                  ? "-"
+                  : snapshot.close > snapshot.vwap
+                  ? "VWAP上"
+                  : snapshot.close < snapshot.vwap
+                  ? "VWAP下"
+                  : "VWAP付近"
+              }
+            />
+            <Row label="ロング閾値（高+0.2×ATR）" value={fmt(snapshot.longThreshold)} />
+            <Row label="ショート閾値（安−0.2×ATR）" value={fmt(snapshot.shortThreshold)} />
             <Row label="初ブレイク相当・ロング" value={boolJa(snapshot.firstBreakLong)} />
             <Row label="初ブレイク相当・ショート" value={boolJa(snapshot.firstBreakShort)} />
           </MetricBlock>
@@ -107,31 +120,16 @@ export function NikkeiMarketPanel() {
           </MetricBlock>
 
           <MetricBlock title="押し率">
-            <Row label="ロング想定" value={snapshot.oshiritsuLong == null ? "-" : `${fmt(snapshot.oshiritsuLong)}%`} />
             <Row
-              label="ブレイク後最高値"
-              value={fmt(snapshot.breakoutHigh)}
+              label="ロング想定"
+              value={snapshot.oshiritsuLong == null ? "-" : `${fmt(snapshot.oshiritsuLong)}%`}
             />
-            <Row label="ショート想定" value={snapshot.oshiritsuShort == null ? "-" : `${fmt(snapshot.oshiritsuShort)}%`} />
+            <Row label="ブレイク後最高値" value={fmt(snapshot.breakoutHigh)} />
+            <Row
+              label="ショート想定"
+              value={snapshot.oshiritsuShort == null ? "-" : `${fmt(snapshot.oshiritsuShort)}%`}
+            />
             <Row label="ブレイク後最安値" value={fmt(snapshot.breakoutLow)} />
-          </MetricBlock>
-
-          <MetricBlock title="リスク参考（ロング・現在終値ベース）">
-            <Row label="採用ストップ" value={fmt(snapshot.rsLong?.stopPrimary)} />
-            <Row label="リスク幅" value={fmt(snapshot.rsLong?.riskWidth)} />
-            <Row
-              label="利確 1R / 2R"
-              value={`${fmt(snapshot.rsLong?.tp1)} / ${fmt(snapshot.rsLong?.tp2)}`}
-            />
-          </MetricBlock>
-
-          <MetricBlock title="リスク参考（ショート・現在終値ベース）">
-            <Row label="採用ストップ" value={fmt(snapshot.rsShort?.stopPrimary)} />
-            <Row label="リスク幅" value={fmt(snapshot.rsShort?.riskWidth)} />
-            <Row
-              label="利確 1R / 2R"
-              value={`${fmt(snapshot.rsShort?.tp1)} / ${fmt(snapshot.rsShort?.tp2)}`}
-            />
           </MetricBlock>
         </div>
       )}

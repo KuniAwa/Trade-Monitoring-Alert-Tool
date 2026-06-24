@@ -10,7 +10,6 @@ const EMA_FAST_1H = 20;
 const EMA_SLOW_1H = 50;
 const ATR_PERIOD_15 = 14;
 const BREAKOUT_ATR_MULT = 0.2;
-const STOP_ATR_MULT = 1.5;
 const BREAKOUT_RECENT_15M_BARS = 128;
 
 export interface NikkeiMarketSnapshot {
@@ -20,6 +19,9 @@ export interface NikkeiMarketSnapshot {
   close: number;
   ma20_15m: number | null;
   atr15: number | null;
+  /** 本日JSTセッションのVWAP（出来高ありの足のみ。^N225等は null） */
+  vwap: number | null;
+  vwapLabel: string;
   longThreshold: number | null;
   shortThreshold: number | null;
   firstBreakLong: boolean;
@@ -37,15 +39,6 @@ export interface NikkeiMarketSnapshot {
   oshiritsuShort: number | null;
   breakoutHigh: number | null;
   breakoutLow: number | null;
-  rsLong: RiskScenario | null;
-  rsShort: RiskScenario | null;
-}
-
-export interface RiskScenario {
-  stopPrimary: number;
-  riskWidth: number;
-  tp1: number;
-  tp2: number;
 }
 
 function jstParts(epochSec: number): { y: number; m: number; d: number; h: number; min: number; wd: number } {
@@ -164,6 +157,31 @@ function trend1hEmaSlope(bars1h: CompactBar[]): {
   };
 }
 
+function sessionVwapAtBar(bars15: CompactBar[], throughIdx: number): number | null {
+  const todayKey = dateKey(jstParts(Math.floor(Date.now() / 1000)));
+  const windows: [number, number][] = [
+    [9 * 60, 15 * 60 + 45],
+    [8 * 60, 16 * 60],
+    [0, 24 * 60 - 1]
+  ];
+  let sumPv = 0;
+  let sumV = 0;
+  for (let i = 0; i <= throughIdx; i++) {
+    const b = bars15[i];
+    const p = jstParts(b[0]);
+    if (dateKey(p) !== todayKey) continue;
+    const mins = p.h * 60 + p.min;
+    const inWindow = windows.some(([s, e]) => mins >= s && mins <= e);
+    if (!inWindow) continue;
+    const vol = b[5] ?? 0;
+    if (vol <= 0) continue;
+    const typical = (b[2] + b[3] + b[4]) / 3;
+    sumPv += typical * vol;
+    sumV += vol;
+  }
+  return sumV > 0 ? sumPv / sumV : null;
+}
+
 function atr15AtLastClosed(bars15: CompactBar[]): number | null {
   if (bars15.length < ATR_PERIOD_15 + 3) return null;
   const highs = bars15.map((b) => b[2]);
@@ -243,30 +261,6 @@ function shortOshiritsu(
   return { pct: ((currentClose - breakoutLow) / denom) * 100, breakoutLow };
 }
 
-function riskLong(close: number, prevHigh: number, atr15: number | null): RiskScenario {
-  const stopPrev = prevHigh;
-  const stopAtr = atr15 && atr15 > 0 ? close - STOP_ATR_MULT * atr15 : null;
-  const stopPrimary = stopAtr != null ? Math.max(stopPrev, stopAtr) : stopPrev;
-  let risk = close - stopPrimary;
-  if (risk <= 0) {
-    risk = Math.max(close - prevHigh, 1e-12);
-  }
-  const sp = close - risk;
-  return { stopPrimary: sp, riskWidth: risk, tp1: close + risk, tp2: close + 2 * risk };
-}
-
-function riskShort(close: number, prevLow: number, atr15: number | null): RiskScenario {
-  const stopPrev = prevLow;
-  const stopAtr = atr15 && atr15 > 0 ? close + STOP_ATR_MULT * atr15 : null;
-  const stopPrimary = stopAtr != null ? Math.min(stopPrev, stopAtr) : stopPrev;
-  let risk = stopPrimary - close;
-  if (risk <= 0) {
-    risk = Math.max(prevLow - close, 1e-12);
-  }
-  const sp = close + risk;
-  return { stopPrimary: sp, riskWidth: risk, tp1: close - risk, tp2: close - 2 * risk };
-}
-
 function fmtJstFromEpoch(epochSec: number): string {
   const s = new Date(epochSec * 1000).toLocaleString("sv-SE", {
     timeZone: "Asia/Tokyo",
@@ -317,6 +311,7 @@ export function buildNikkeiMarketSnapshot(
 
   const longO = longOshiritsu(bars15, prevHl.high, close);
   const shortO = shortOshiritsu(bars15, prevHl.low, close);
+  const vwap = sessionVwapAtBar(bars15, idx);
 
   return {
     symbol,
@@ -325,6 +320,8 @@ export function buildNikkeiMarketSnapshot(
     close,
     ma20_15m: ma20,
     atr15,
+    vwap,
+    vwapLabel: "本日JSTセッションVWAP",
     longThreshold,
     shortThreshold,
     firstBreakLong,
@@ -341,8 +338,6 @@ export function buildNikkeiMarketSnapshot(
     oshiritsuLong: longO.pct != null ? Math.round(longO.pct * 10) / 10 : null,
     oshiritsuShort: shortO.pct != null ? Math.round(shortO.pct * 10) / 10 : null,
     breakoutHigh: longO.breakoutHigh,
-    breakoutLow: shortO.breakoutLow,
-    rsLong: riskLong(close, prevHl.high, atr15),
-    rsShort: riskShort(close, prevHl.low, atr15)
+    breakoutLow: shortO.breakoutLow
   };
 }
