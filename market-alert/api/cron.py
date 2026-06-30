@@ -544,6 +544,14 @@ def load_settings() -> dict:
     return {"monitor": {"start_jst": "00:00", "end_jst": "23:59"}}
 
 
+def summary_include_nikkei(settings: dict) -> bool:
+    """settings.json の summary.include_nikkei。未設定時は True（日経もサマリーに含める）。"""
+    summary = settings.get("summary") or {}
+    if "include_nikkei" not in summary:
+        return True
+    return bool(summary.get("include_nikkei"))
+
+
 def is_within_monitor_window(settings: dict) -> bool:
     """現在時刻（JST）が監視時間内か。"""
     tz = ZoneInfo("Asia/Tokyo")
@@ -1437,7 +1445,8 @@ def send_alert_email(alert: dict) -> None:
 def should_send_daily_summary() -> tuple[bool, str | None, str]:
     """
     平日のサマリー送信タイミングを判定。
-    - 平日かつ JST 23:00〜23:14（Cron のずれ対策）に1回だけ、監視対象の全銘柄（FX + 日経）を1通にまとめて送信 → ("all", now_str)
+    - 平日かつ JST 23:00〜23:14（Cron のずれ対策）に1回だけ、監視対象銘柄を1通にまとめて送信 → ("all", now_str)
+      （settings.json の summary.include_nikkei が false のとき日経は除外。アラート監視は継続）
     戻り値: (送信するか, グループ "all"|None, 表示用 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
@@ -1962,6 +1971,8 @@ def run_checks() -> dict:
     try:
         if should_send and summary_group and now_jst_str:
             summary_symbols = list(symbols) if summary_group == "all" else []
+            if not summary_include_nikkei(settings):
+                summary_symbols = [s for s in summary_symbols if not s[2]]
             snapshots: list[dict] = []
             skip_notes: list[str] = []
             for symbol, label, use_jst_1545 in summary_symbols:

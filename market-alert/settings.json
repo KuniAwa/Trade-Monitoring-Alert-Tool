@@ -6,5 +6,8 @@
   "nikkei_volume": {
     "mult": 1.5,
     "lookback_days": 10
+  },
+  "summary": {
+    "include_nikkei": false
   }
 }
