@@ -12,10 +12,16 @@ function boolJa(v: boolean): string {
   return v ? "はい" : "いいえ";
 }
 
-function trendColor(s: NikkeiMarketSnapshot): string {
-  if (s.trend1hUp) return "text-up";
-  if (s.trend1hDown) return "text-down";
+function trendColor(up: boolean, down: boolean): string {
+  if (up) return "text-up";
+  if (down) return "text-down";
   return "text-slate-600";
+}
+
+function trendBg(up: boolean, down: boolean): string {
+  if (up) return "bg-green-50";
+  if (down) return "bg-red-50";
+  return "bg-slate-50";
 }
 
 export function NikkeiMarketPanel() {
@@ -78,11 +84,27 @@ export function NikkeiMarketPanel() {
             <span>取得: {snapshot.fetchedAtJst}</span>
           </div>
 
-          <div
-            className={`rounded-lg px-3 py-2 ${snapshot.trend1hUp ? "bg-green-50" : snapshot.trend1hDown ? "bg-red-50" : "bg-slate-50"}`}
-          >
-            <div className="text-[11px] text-slate-500">1時間足トレンド判定（サマリーメールと同じ）</div>
-            <div className={`mt-0.5 text-base font-bold ${trendColor(snapshot)}`}>{snapshot.trend1hJa}</div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className={`rounded-lg px-3 py-2 ${trendBg(snapshot.trend1hUp, snapshot.trend1hDown)}`}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">環境認識</div>
+              <div className="text-[11px] text-slate-500">1時間足トレンド（EMA20/50・サマリーメールと同じ）</div>
+              <div
+                className={`mt-0.5 text-base font-bold ${trendColor(snapshot.trend1hUp, snapshot.trend1hDown)}`}
+              >
+                {snapshot.trend1hJa}
+              </div>
+            </div>
+            <div className={`rounded-lg px-3 py-2 ${trendBg(snapshot.trend15mUp, snapshot.trend15mDown)}`}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">執行タイミング</div>
+              <div className="text-[11px] text-slate-500">
+                15分足トレンド（EMA{snapshot.emaFast15mPeriod}/{snapshot.emaSlow15mPeriod}）
+              </div>
+              <div
+                className={`mt-0.5 text-base font-bold ${trendColor(snapshot.trend15mUp, snapshot.trend15mDown)}`}
+              >
+                {snapshot.trend15mJa}
+              </div>
+            </div>
           </div>
 
           {snapshot.fiveMin && (
@@ -135,11 +157,18 @@ export function NikkeiMarketPanel() {
             <Row label="前日安値" value={fmt(snapshot.prevLow)} />
           </MetricBlock>
 
-          <MetricBlock title="1時間足（EMA環境認識）">
-            <Row label="終値" value={fmt(snapshot.close1h)} />
-            <Row label="EMA(20)" value={fmt(snapshot.ema20_1h)} />
-            <Row label="EMA(50)" value={fmt(snapshot.ema50_1h)} />
-          </MetricBlock>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <MetricBlock title="1時間足（環境認識）">
+              <Row label="終値" value={fmt(snapshot.close1h)} />
+              <Row label="EMA(20)" value={fmt(snapshot.ema20_1h)} />
+              <Row label="EMA(50)" value={fmt(snapshot.ema50_1h)} />
+            </MetricBlock>
+            <MetricBlock title="15分足（執行タイミング）">
+              <Row label="終値" value={fmt(snapshot.close15m)} />
+              <Row label={`EMA(${snapshot.emaFast15mPeriod})`} value={fmt(snapshot.emaFast15m)} />
+              <Row label={`EMA(${snapshot.emaSlow15mPeriod})`} value={fmt(snapshot.emaSlow15m)} />
+            </MetricBlock>
+          </div>
 
           <MetricBlock title="押し率">
             <Row

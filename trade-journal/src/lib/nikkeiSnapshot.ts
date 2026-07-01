@@ -8,6 +8,9 @@ import type { CompactBar } from "@/lib/types";
 
 const EMA_FAST_1H = 20;
 const EMA_SLOW_1H = 50;
+/** 15分足トレンド（執行タイミング用・1時間足より短い期間） */
+const EMA_FAST_15M = 9;
+const EMA_SLOW_15M = 21;
 const ATR_PERIOD_15 = 14;
 const BREAKOUT_ATR_MULT = 0.2;
 const BREAKOUT_RECENT_15M_BARS = 128;
@@ -47,6 +50,14 @@ export interface NikkeiMarketSnapshot {
   trend1hJa: string;
   trend1hUp: boolean;
   trend1hDown: boolean;
+  close15m: number | null;
+  emaFast15m: number | null;
+  emaSlow15m: number | null;
+  emaFast15mPeriod: number;
+  emaSlow15mPeriod: number;
+  trend15mJa: string;
+  trend15mUp: boolean;
+  trend15mDown: boolean;
   oshiritsuLong: number | null;
   oshiritsuShort: number | null;
   breakoutHigh: number | null;
@@ -133,40 +144,50 @@ function lastClosedIndex(n: number): number {
   return n >= 2 ? n - 2 : n - 1;
 }
 
-function trend1hEmaSlope(bars1h: CompactBar[]): {
+function trendEmaSlope(
+  bars: CompactBar[],
+  emaFastPeriod: number,
+  emaSlowPeriod: number
+): {
   up: boolean;
   down: boolean;
-  close1h: number | null;
-  ema20: number | null;
-  ema50: number | null;
+  close: number | null;
+  emaFast: number | null;
+  emaSlow: number | null;
 } {
-  const n = bars1h.length;
+  const n = bars.length;
   const L = lastClosedIndex(n);
-  if (n < 3 || L < EMA_SLOW_1H - 1 || L < 2) {
-    return { up: false, down: false, close1h: null, ema20: null, ema50: null };
+  if (n < 3 || L < emaSlowPeriod - 1 || L < 2) {
+    return { up: false, down: false, close: null, emaFast: null, emaSlow: null };
   }
-  const closes = bars1h.map((b) => b[4]);
-  const ema20 = ema(closes, EMA_FAST_1H);
-  const ema50 = ema(closes, EMA_SLOW_1H);
+  const closes = bars.map((b) => b[4]);
+  const emaFastSeries = ema(closes, emaFastPeriod);
+  const emaSlowSeries = ema(closes, emaSlowPeriod);
   const c = closes[L];
-  const e20 = ema20[L];
-  const e50 = ema50[L];
-  const e20m1 = ema20[L - 1];
-  const e20m2 = ema20[L - 2];
-  if (c <= 0 || e20 == null || e50 == null || e20m1 == null || e20m2 == null) {
-    return { up: false, down: false, close1h: c, ema20: e20, ema50: e50 };
+  const eFast = emaFastSeries[L];
+  const eSlow = emaSlowSeries[L];
+  const eFastM1 = emaFastSeries[L - 1];
+  const eFastM2 = emaFastSeries[L - 2];
+  if (c <= 0 || eFast == null || eSlow == null || eFastM1 == null || eFastM2 == null) {
+    return { up: false, down: false, close: c, emaFast: eFast, emaSlow: eSlow };
   }
-  const upStack = c > e20 && e20 > e50;
-  const downStack = c < e20 && e20 < e50;
-  const slopeUp = e20 > e20m1 && e20m1 > e20m2;
-  const slopeDown = e20 < e20m1 && e20m1 < e20m2;
+  const upStack = c > eFast && eFast > eSlow;
+  const downStack = c < eFast && eFast < eSlow;
+  const slopeUp = eFast > eFastM1 && eFastM1 > eFastM2;
+  const slopeDown = eFast < eFastM1 && eFastM1 < eFastM2;
   return {
     up: upStack && slopeUp,
     down: downStack && slopeDown,
-    close1h: c,
-    ema20: e20,
-    ema50: e50
+    close: c,
+    emaFast: eFast,
+    emaSlow: eSlow
   };
+}
+
+function trendJa(up: boolean, down: boolean): string {
+  if (up) return "上昇（EMA順位+傾きOK）";
+  if (down) return "下降（EMA順位+傾きOK）";
+  return "中立/レンジ寄り";
 }
 
 function sessionVwapAtBar(bars: CompactBar[], throughIdx: number): number | null {
@@ -341,10 +362,8 @@ export function buildNikkeiMarketSnapshot(
   const firstBreakShort =
     prevClose != null && prevClose >= shortThreshold && close < shortThreshold;
 
-  const trend = trend1hEmaSlope(bars1h);
-  let trend1hJa = "中立/レンジ寄り";
-  if (trend.up) trend1hJa = "上昇（EMA順位+傾きOK）";
-  else if (trend.down) trend1hJa = "下降（EMA順位+傾きOK）";
+  const trend1h = trendEmaSlope(bars1h, EMA_FAST_1H, EMA_SLOW_1H);
+  const trend15m = trendEmaSlope(bars15, EMA_FAST_15M, EMA_SLOW_15M);
 
   const longO = longOshiritsu(bars15, prevHl.high, close);
   const shortO = shortOshiritsu(bars15, prevHl.low, close);
@@ -369,12 +388,20 @@ export function buildNikkeiMarketSnapshot(
     prevHigh: prevHl.high,
     prevLow: prevHl.low,
     prevHlLabel: "前営業日・JST日中セッション高安",
-    close1h: trend.close1h,
-    ema20_1h: trend.ema20,
-    ema50_1h: trend.ema50,
-    trend1hJa,
-    trend1hUp: trend.up,
-    trend1hDown: trend.down,
+    close1h: trend1h.close,
+    ema20_1h: trend1h.emaFast,
+    ema50_1h: trend1h.emaSlow,
+    trend1hJa: trendJa(trend1h.up, trend1h.down),
+    trend1hUp: trend1h.up,
+    trend1hDown: trend1h.down,
+    close15m: trend15m.close,
+    emaFast15m: trend15m.emaFast,
+    emaSlow15m: trend15m.emaSlow,
+    emaFast15mPeriod: EMA_FAST_15M,
+    emaSlow15mPeriod: EMA_SLOW_15M,
+    trend15mJa: trendJa(trend15m.up, trend15m.down),
+    trend15mUp: trend15m.up,
+    trend15mDown: trend15m.down,
     oshiritsuLong: longO.pct != null ? Math.round(longO.pct * 10) / 10 : null,
     oshiritsuShort: shortO.pct != null ? Math.round(shortO.pct * 10) / 10 : null,
     breakoutHigh: longO.breakoutHigh,
