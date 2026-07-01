@@ -74,6 +74,20 @@ export async function fetch15mBars(range = "1mo"): Promise<{ symbol: string; bar
   throw lastErr instanceof Error ? lastErr : new Error("Yahoo fetch failed");
 }
 
+/** 5分足を取得（表示パネル専用・DB保存なし）。 */
+export async function fetch5mBars(range = "5d"): Promise<{ symbol: string; bars: CompactBar[] }> {
+  let lastErr: unknown = null;
+  for (const sym of symbolCandidates()) {
+    try {
+      const bars = await fetchYahooChart(sym, "5m", range);
+      return { symbol: sym, bars };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Yahoo 5m fetch failed");
+}
+
 /** 1時間足を取得（候補シンボルを順に試す）。 */
 export async function fetch1hBars(range = "1mo"): Promise<{ symbol: string; bars: CompactBar[] }> {
   let lastErr: unknown = null;

@@ -49,7 +49,7 @@ export function NikkeiMarketPanel() {
         <div>
           <h2 className="text-sm font-semibold text-slate-800">日経先物・投資判断用指標</h2>
           <p className="mt-0.5 text-[11px] text-slate-400">
-            アラートツールと同一データ（Yahoo 15分足・1時間足）。「更新」でその時点を取得。
+            Yahoo 15分足・1時間足（アラートと同一）＋5分足（表示専用）。「更新」でその時点を取得。
           </p>
         </div>
         <button
@@ -84,6 +84,28 @@ export function NikkeiMarketPanel() {
             <div className="text-[11px] text-slate-500">1時間足トレンド判定（サマリーメールと同じ）</div>
             <div className={`mt-0.5 text-base font-bold ${trendColor(snapshot)}`}>{snapshot.trend1hJa}</div>
           </div>
+
+          {snapshot.fiveMin && (
+            <MetricBlock title="5分足（短期・表示専用）">
+              <Row label="判定足" value={snapshot.fiveMin.barTimeJst} />
+              <Row label="終値" value={fmt(snapshot.fiveMin.close)} />
+              <Row label="20MA" value={fmt(snapshot.fiveMin.ma20)} />
+              <Row label="ATR(14)" value={fmt(snapshot.fiveMin.atr14)} highlight />
+              <Row label={snapshot.fiveMin.vwapLabel} value={fmt(snapshot.fiveMin.vwap)} />
+              <Row
+                label="終値 vs VWAP"
+                value={
+                  snapshot.fiveMin.vwap == null
+                    ? "-"
+                    : snapshot.fiveMin.close > snapshot.fiveMin.vwap
+                    ? "VWAP上"
+                    : snapshot.fiveMin.close < snapshot.fiveMin.vwap
+                    ? "VWAP下"
+                    : "VWAP付近"
+                }
+              />
+            </MetricBlock>
+          )}
 
           <MetricBlock title="15分足">
             <Row label="終値" value={fmt(snapshot.close)} />
