@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Invalid barTime" }, { status: 400 });
   }
 
-  const { numeric, ohlc15 } = normalizeIngestPayload(payload);
+  const { numeric, ohlc15, ohlc5 } = normalizeIngestPayload(payload);
   const source = ["scan", "alert", "summary"].includes(payload.source) ? payload.source : "scan";
   const alertDir = payload.alertDir === "long" || payload.alertDir === "short" ? payload.alertDir : null;
 
@@ -57,7 +57,8 @@ export async function POST(req: NextRequest) {
     close1h: numeric.close1h,
     ema20_1h: numeric.ema20_1h,
     ema50_1h: numeric.ema50_1h,
-    ohlc15: ohlc15 as CompactBar[] | null
+    ohlc15: ohlc15 as CompactBar[] | null,
+    ohlc5: ohlc5 as CompactBar[] | null
   });
 
   // 容量削減: 同一足・同一ソースの重複は1件に集約（scan の取りこぼし再送対策）
@@ -87,7 +88,8 @@ export async function POST(req: NextRequest) {
     featuresJson: features as unknown as Prisma.InputJsonValue,
     ohlc15Json: ohlc15
       ? (ohlc15 as unknown as Prisma.InputJsonValue)
-      : Prisma.DbNull
+      : Prisma.DbNull,
+    ohlc5Json: ohlc5 ? (ohlc5 as unknown as Prisma.InputJsonValue) : Prisma.DbNull
   };
 
   const saved = existing

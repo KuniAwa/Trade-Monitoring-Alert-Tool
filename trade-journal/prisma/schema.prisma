@@ -46,6 +46,8 @@ model Signal {
   featuresJson Json?
   /// 直近の15分足小窓 [[epochSec,o,h,l,c,v], ...]（容量削減: 限定本数・丸め）。prune で null
   ohlc15Json   Json?
+  /// 直近の5分足小窓（分析用）。prune で null
+  ohlc5Json    Json?
   /// 後追いで算出した結果ラベル（1R/2R到達・MAE/MFE・前方リターン等）。再計算可能なため任意
   outcomeJson  Json?
 

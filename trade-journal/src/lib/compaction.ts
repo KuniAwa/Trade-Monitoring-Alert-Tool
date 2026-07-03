@@ -14,6 +14,8 @@ const PRICE_DECIMALS = 1;
 const RATIO_DECIMALS = 3;
 /** スナップショットに保存する15分足の最大本数（容量削減） */
 export const MAX_STORED_15M_BARS = 20;
+/** スナップショットに保存する5分足の最大本数（容量削減） */
+export const MAX_STORED_5M_BARS = 40;
 
 export function roundTo(value: number | null | undefined, decimals: number): number | null {
   if (value == null || !Number.isFinite(value)) return null;
@@ -48,8 +50,9 @@ export function compactBars(bars: CompactBar[] | undefined, maxBars = MAX_STORED
 
 /** 投入ペイロードの数値を丸め、保存サイズを抑えた形へ正規化する。 */
 export function normalizeIngestPayload(p: IngestPayload): {
-  numeric: Omit<IngestPayload, "ohlc15" | "barTime" | "source" | "alertDir">;
+  numeric: Omit<IngestPayload, "ohlc15" | "ohlc5" | "barTime" | "source" | "alertDir">;
   ohlc15: CompactBar[] | null;
+  ohlc5: CompactBar[] | null;
 } {
   return {
     numeric: {
@@ -69,7 +72,8 @@ export function normalizeIngestPayload(p: IngestPayload): {
       oshiritsuShort: roundRatio(p.oshiritsuShort),
       volumeRatio: roundRatio(p.volumeRatio)
     },
-    ohlc15: compactBars(p.ohlc15)
+    ohlc15: compactBars(p.ohlc15, MAX_STORED_15M_BARS),
+    ohlc5: compactBars(p.ohlc5, MAX_STORED_5M_BARS)
   };
 }
 

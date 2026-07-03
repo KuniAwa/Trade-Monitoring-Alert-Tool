@@ -17,7 +17,7 @@ function authorized(req: NextRequest): boolean {
 
 /**
  * 容量削減のためのプルーニング。
- *  - 保持日数を過ぎた Signal の生OHLC窓(ohlc15Json)を DB NULL 化（featuresJson は残す）
+ *  - 保持日数を過ぎた Signal の生OHLC窓(ohlc15Json / ohlc5Json)を DB NULL 化（featuresJson は残す）
  *  - 任意で deleteScanOlderThanDays を指定すると、その日数を超えた source="scan"
  *    （取引に紐付かないもの）を削除して更に容量を削減
  */
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
 
   const nulled = await prisma.signal.updateMany({
     where: { barTime: { lt: cutoff }, pruned: false },
-    data: { ohlc15Json: Prisma.DbNull, pruned: true }
+    data: { ohlc15Json: Prisma.DbNull, ohlc5Json: Prisma.DbNull, pruned: true }
   });
 
   let deletedScan = 0;
@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const nulled = await prisma.signal.updateMany({
     where: { barTime: { lt: cutoff }, pruned: false },
-    data: { ohlc15Json: Prisma.DbNull, pruned: true }
+    data: { ohlc15Json: Prisma.DbNull, ohlc5Json: Prisma.DbNull, pruned: true }
   });
   return NextResponse.json({ ok: true, retentionDays, ohlcNulled: nulled.count });
 }

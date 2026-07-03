@@ -27,6 +27,8 @@ export interface IngestPayload {
   volumeRatio?: number | null;
   /** 直近の15分足小窓（容量削減のため限定本数） */
   ohlc15?: CompactBar[];
+  /** 直近の5分足小窓（分析用・容量削減のため限定本数） */
+  ohlc5?: CompactBar[];
 }
 
 /** スナップショットから導く拡張特徴量（現行アラート条件以外の探索用） */
@@ -51,6 +53,10 @@ export interface SignalFeatures {
   atrRegime?: string | null;
   /** 前日レンジ幅（prevHigh-prevLow） */
   prevRange?: number | null;
+  /** 5分足モメンタム（直近30分＝6本前からの終値変化率 %） */
+  momentum5mPct?: number | null;
+  /** 5分足終値の本日JSTセッションVWAPからの乖離率 % */
+  vwapDeviation5mPct?: number | null;
 }
 
 /** 取引/シグナルの結果ラベル（同一データ＝Yahoo の前方足から算出） */

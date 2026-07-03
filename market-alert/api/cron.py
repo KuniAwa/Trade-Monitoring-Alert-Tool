@@ -370,57 +370,36 @@ def _twelvedata_prev_session_hl(api_key: str) -> tuple[float | None, float | Non
     return (None, None)
 
 
-def get_prev_session_high_low_jst_1545(api_key: str, symbol: str) -> tuple[float | None, float | None]:
+def prev_session_high_low_from_15m(ohlc_15: list) -> tuple[float | None, float | None]:
     """
-    日経225先物用: 前日の日中セッション（JST 09:00〜15:45）の高値・安値を返す。
-    15分足を JST で取得し、該当セッションの max(high), min(low) を計算。
+    取得済み15分足から、前営業日JSTセッション（09:00〜15:45 等）の高値・安値を算出する。
+    別枠の Yahoo/Twelve Data フェッチは行わない（429 対策）。
     """
+    if not ohlc_15:
+        return (None, None)
     tz = ZoneInfo("Asia/Tokyo")
     today = datetime.now(tz).date()
-    yesterday = today - timedelta(days=1)
-    start_str = f"{yesterday.isoformat()}T09:00:00"
-    end_str = f"{yesterday.isoformat()}T15:45:00"
-    try:
-        if symbol in YAHOO_NIKKEI_CANDIDATES:
-            hi, lo = _yahoo_prev_session_hl_fallback_chain(symbol)
-            if hi is not None and lo is not None:
-                return (hi, lo)
-            seen_d: set[str] = set()
-            for sym in ("^N225", symbol):
-                if sym in seen_d:
-                    continue
-                seen_d.add(sym)
-                hi, lo = _yahoo_daily_prev_trading_hl(sym)
-                if hi is not None and lo is not None:
-                    return (hi, lo)
-            hi, lo = _twelvedata_prev_session_hl(api_key)
-            if hi is not None and lo is not None:
-                return (hi, lo)
-            return (None, None)
+    dates = _yahoo_trading_dates_desc(ohlc_15, today)
+    if not dates:
+        dates = [_prev_business_day_jst(today)]
+    for session_date in dates:
+        hi, lo = _yahoo_session_high_low_from_15m(ohlc_15, session_date)
+        if hi is not None and lo is not None and hi > 0 and lo > 0:
+            return (hi, lo)
+    return (None, None)
 
-        r = requests.get(
-            f"{BASE_URL}/time_series",
-            params={
-                "symbol": symbol,
-                "interval": INTERVAL_15,
-                "start_date": start_str,
-                "end_date": end_str,
-                "timezone": "Asia/Tokyo",
-                "apikey": api_key,
-                "format": "JSON",
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        values = data.get("values") or []
-        if not values:
-            return (None, None)
-        highs = [float_or(b.get("high"), 0) for b in values if float_or(b.get("high"), 0) > 0]
-        lows = [float_or(b.get("low"), 0) for b in values if float_or(b.get("low"), 0) > 0]
-        if not highs or not lows:
-            return (None, None)
-        return (max(highs), min(lows))
+
+def get_prev_session_high_low_jst_1545(
+    api_key: str, symbol: str, ohlc_15: list | None = None
+) -> tuple[float | None, float | None]:
+    """
+    日経225先物用: 前営業日JSTセッション高安。
+    ohlc_15 が渡されなければ15分足を1回だけ取得してから算出する。
+    """
+    try:
+        if not ohlc_15:
+            ohlc_15 = get_15min_ohlc(api_key, symbol)
+        return prev_session_high_low_from_15m(ohlc_15)
     except Exception:
         return (None, None)
 
@@ -445,6 +424,29 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
     if "values" not in data:
         raise ValueError(f"No values in 15min response for {symbol}: {str(data)[:200]}")
     return data["values"]
+
+
+def get_5min_ohlc(api_key: str, symbol: str) -> list:
+    """5分足を取得（新しい順）。日経 Yahoo のみ。trade-journal 分析用。"""
+    if symbol in YAHOO_NIKKEI_CANDIDATES:
+        return _fetch_yahoo_chart(symbol, "5m", "5d")
+    return []
+
+
+def fetch_nikkei_market_data(api_key: str, symbol: str) -> dict:
+    """
+    日経1銘柄分の OHLC を1スキャン1回ずつ取得する（アラート判定と trade-journal 投入で共用）。
+    5分足はベストエフォート（失敗時 None）。
+    """
+    ohlc_15 = get_15min_ohlc(api_key, symbol)
+    ohlc_1h = get_1h_ohlc(api_key, symbol)
+    ohlc_5: list | None = None
+    if symbol in YAHOO_NIKKEI_CANDIDATES:
+        try:
+            ohlc_5 = get_5min_ohlc(api_key, symbol)
+        except Exception:
+            ohlc_5 = None
+    return {"ohlc_15": ohlc_15, "ohlc_1h": ohlc_1h, "ohlc_5": ohlc_5}
 
 
 def get_1h_ohlc(api_key: str, symbol: str) -> list:
@@ -1101,16 +1103,28 @@ def risk_scenario_short(close: float, prev_low: float, atr: float) -> dict:
     }
 
 
-def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545: bool = False) -> list:
+def evaluate_symbol(
+    api_key: str,
+    symbol: str,
+    label: str,
+    use_jst_session_1545: bool = False,
+    bundle: dict | None = None,
+) -> list:
     """
     1銘柄について条件を評価し、成立したアラートのリストを返す。
     use_jst_session_1545=True のとき前日高値・安値は JST 日中セッション（09:00〜15:45）基準。
+    bundle が渡された場合は OHLC の再取得を行わない（429 対策）。
     """
     vol_mult = 1.5
     vol_lookback = 10
+    ohlc_15 = (bundle or {}).get("ohlc_15")
+    ohlc_1h = (bundle or {}).get("ohlc_1h")
+
     if use_jst_session_1545:
         vol_mult, vol_lookback = nikkei_volume_settings(load_settings())
-        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
+        if not ohlc_15:
+            ohlc_15 = get_15min_ohlc(api_key, symbol)
+        prev_high, prev_low = prev_session_high_low_from_15m(ohlc_15)
         if prev_high is None or prev_low is None or prev_high <= 0 or prev_low <= 0:
             return []
     else:
@@ -1123,8 +1137,10 @@ def evaluate_symbol(api_key: str, symbol: str, label: str, use_jst_session_1545:
         if prev_high <= 0 or prev_low <= 0:
             return []
 
-    ohlc_15 = get_15min_ohlc(api_key, symbol)
-    ohlc_1h = get_1h_ohlc(api_key, symbol)
+    if not ohlc_15:
+        ohlc_15 = get_15min_ohlc(api_key, symbol)
+    if not ohlc_1h:
+        ohlc_1h = get_1h_ohlc(api_key, symbol)
 
     bar = last_closed_bar(ohlc_15)
     if not bar:
@@ -1465,14 +1481,25 @@ def build_snapshot(
     symbol: str,
     label: str,
     use_jst_session_1545: bool,
+    bundle: dict | None = None,
 ) -> dict | None:
     """
     サマリーメール用に1銘柄分のスナップショットを構築。
     アラート条件には関係なく、現在の状態をそのまま返す。
+    bundle が渡された場合は OHLC の再取得を行わない。
     """
+    ohlc_15 = (bundle or {}).get("ohlc_15")
+    ohlc_1h = (bundle or {}).get("ohlc_1h")
+    ohlc_5 = (bundle or {}).get("ohlc_5")
+
+    if not ohlc_15:
+        ohlc_15 = get_15min_ohlc(api_key, symbol)
+    if not ohlc_1h:
+        ohlc_1h = get_1h_ohlc(api_key, symbol)
+
     # 前日高値・安値
     if use_jst_session_1545:
-        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
+        prev_high, prev_low = prev_session_high_low_from_15m(ohlc_15)
         if prev_high is None or prev_low is None:
             return None
     else:
@@ -1484,10 +1511,6 @@ def build_snapshot(
         prev_low = float_or(prev_day.get("low"), 0)
         if prev_high <= 0 or prev_low <= 0:
             return None
-
-    # 15分足・1時間足
-    ohlc_15 = get_15min_ohlc(api_key, symbol)
-    ohlc_1h = get_1h_ohlc(api_key, symbol)
     bar = last_closed_bar(ohlc_15)
     if not bar:
         return None
@@ -1542,12 +1565,21 @@ def build_snapshot(
     rs_long = risk_scenario_long(close, prev_high, atr15)
     rs_short = risk_scenario_short(close, prev_low, atr15)
 
-    # トレード日誌（trade-journal）への投入用に、容量削減した15分足の小窓を同梱する。
+    # トレード日誌（trade-journal）への投入用に、容量削減した OHLC 小窓を同梱する。
     ohlc15_tail = _compact_ohlc15_tail(ohlc_15)
+    ohlc5_tail: list = []
+    if use_jst_session_1545 and ohlc_5 is None and symbol in YAHOO_NIKKEI_CANDIDATES:
+        try:
+            ohlc_5 = get_5min_ohlc(api_key, symbol)
+        except Exception:
+            ohlc_5 = None
+    if ohlc_5:
+        ohlc5_tail = _compact_ohlc5_tail(ohlc_5)
 
     return {
         "symbol": symbol,
         "ohlc15_tail": ohlc15_tail,
+        "ohlc5_tail": ohlc5_tail,
         "label": label,
         "datetime": bar_dt,
         "close": close,
@@ -1634,25 +1666,18 @@ def explain_nikkei_summary_skip(api_key: str, symbol: str, label: str) -> str:
     build_snapshot と同じ判定順で日本語1文にまとめる。
     """
     try:
-        prev_high, prev_low = get_prev_session_high_low_jst_1545(api_key, symbol)
-        if prev_high is None or prev_low is None:
-            if symbol in YAHOO_NIKKEI_CANDIDATES:
-                detail = (
-                    "Yahoo Finance（15分足・日足）および Twelve Data（15分足）で、"
-                    "前営業日の高値・安値を取得できませんでした。"
-                )
-            else:
-                detail = (
-                    "前日の日中セッション（JST 9:00〜15:45）の高値・安値を、"
-                    "Twelve Data の15分足から取得できませんでした。"
-                )
-            return f"{label}（{symbol}）をサマリーに含められませんでした。{detail}"
         ohlc_15 = get_15min_ohlc(api_key, symbol)
         if not ohlc_15:
             return (
                 f"{label}（{symbol}）をサマリーに含められませんでした。"
                 "15分足データが空です。"
             )
+        prev_high, prev_low = prev_session_high_low_from_15m(ohlc_15)
+        if prev_high is None or prev_low is None:
+            detail = (
+                "取得済み15分足から、前営業日JSTセッションの高値・安値を算出できませんでした。"
+            )
+            return f"{label}（{symbol}）をサマリーに含められませんでした。{detail}"
         bar = last_closed_bar(ohlc_15)
         if not bar:
             return (
@@ -1790,20 +1815,21 @@ def send_summary_email(
 
 # --- トレード日誌（trade-journal）連携 ---
 # 日経のスナップショットを別ツール（Next.js）へ投入し、後で取引実績の分析に使う。
-# データソースは現行アラートと同一（Yahoo の15分足・1時間足・出来高）。
-# 容量削減のため、15分足の小窓は直近 N 本に限定し、価格は丸めて送る。
+# データソースは現行アラートと同一（Yahoo の15分足・1時間足・5分足・出来高）。
+# 容量削減のため OHLC 小窓は直近 N 本に限定し、価格は丸めて送る。
 
 TRADE_JOURNAL_MAX_15M_BARS = 20
+TRADE_JOURNAL_MAX_5M_BARS = 40
 
 
-def _compact_ohlc15_tail(ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BARS) -> list:
+def _compact_ohlc_bars(ohlc: list, max_bars: int) -> list:
     """
-    15分足（新しい順）から直近 max_bars 本だけを取り出し、
+    OHLC（新しい順）から直近 max_bars 本だけを取り出し、
     [[epochSec, open, high, low, close, volume], ...]（古い順・丸め済み）に変換する。
     """
-    if not ohlc_15:
+    if not ohlc:
         return []
-    head = ohlc_15[: max(1, max_bars)]
+    head = ohlc[: max(1, max_bars)]
     rows: list[list[float]] = []
     for b in reversed(head):
         dt = _parse_bar_datetime_jst(b.get("datetime", ""))
@@ -1820,6 +1846,14 @@ def _compact_ohlc15_tail(ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BA
             ]
         )
     return rows
+
+
+def _compact_ohlc15_tail(ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BARS) -> list:
+    return _compact_ohlc_bars(ohlc_15, max_bars)
+
+
+def _compact_ohlc5_tail(ohlc_5: list, max_bars: int = TRADE_JOURNAL_MAX_5M_BARS) -> list:
+    return _compact_ohlc_bars(ohlc_5, max_bars)
 
 
 def _trade_journal_config() -> tuple[str, str]:
@@ -1852,6 +1886,7 @@ def _ingest_payload_from_snap(
         "oshiritsuShort": snap.get("oshiritsu_short"),
         "volumeRatio": volume_ratio,
         "ohlc15": snap.get("ohlc15_tail") or [],
+        "ohlc5": snap.get("ohlc5_tail") or [],
     }
 
 
@@ -1876,14 +1911,18 @@ def post_trade_journal_snapshot(payload: dict) -> None:
 
 
 def send_nikkei_snapshot_to_journal(
-    api_key: str, symbol: str, label: str, alerts: list
+    api_key: str,
+    symbol: str,
+    label: str,
+    alerts: list,
+    bundle: dict | None = None,
 ) -> None:
     """日経のスナップショットを trade-journal へ送る。アラート発火時は source=alert。"""
     url, secret = _trade_journal_config()
     if not url or not secret:
         return
     try:
-        snap = build_snapshot(api_key, symbol, label, True)
+        snap = build_snapshot(api_key, symbol, label, True, bundle=bundle)
         if not snap:
             return
         fired_dirs = [a.get("direction") for a in alerts if a.get("direction")]
@@ -1955,7 +1994,14 @@ def run_checks() -> dict:
             time.sleep(2)
         for symbol, label, use_jst_1545 in symbols_nikkei:
             try:
-                alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
+                bundle = fetch_nikkei_market_data(api_key, symbol)
+                alerts = evaluate_symbol(
+                    api_key,
+                    symbol,
+                    label,
+                    use_jst_session_1545=use_jst_1545,
+                    bundle=bundle,
+                )
                 for a in alerts:
                     key = (a["symbol"], a["direction"])
                     if key in seen:
@@ -1964,7 +2010,9 @@ def run_checks() -> dict:
                     send_alert_email(a)
                     sent += 1
                 # トレード日誌へスナップショット送信（アラート未発火でも source=scan で蓄積）
-                send_nikkei_snapshot_to_journal(api_key, symbol, label, alerts)
+                send_nikkei_snapshot_to_journal(
+                    api_key, symbol, label, alerts, bundle=bundle
+                )
             except Exception as e:
                 errors.append(f"{symbol}: {str(e)[:200]}")
 
@@ -1977,7 +2025,14 @@ def run_checks() -> dict:
             skip_notes: list[str] = []
             for symbol, label, use_jst_1545 in summary_symbols:
                 try:
-                    snap = build_snapshot(api_key, symbol, label, use_jst_1545)
+                    bundle = (
+                        fetch_nikkei_market_data(api_key, symbol)
+                        if use_jst_1545
+                        else None
+                    )
+                    snap = build_snapshot(
+                        api_key, symbol, label, use_jst_1545, bundle=bundle
+                    )
                     if snap:
                         snapshots.append(snap)
                         # 日次サマリー時点の日経スナップショットもトレード日誌へ送る
