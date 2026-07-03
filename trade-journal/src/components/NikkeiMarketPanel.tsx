@@ -70,6 +70,10 @@ export function NikkeiMarketPanel() {
 
       {error && <p className="mb-2 rounded bg-red-50 p-2 text-xs text-down">{error}</p>}
 
+      {snapshot?.staleDataWarning && (
+        <p className="mb-2 rounded bg-amber-50 p-2 text-xs text-amber-800">{snapshot.staleDataWarning}</p>
+      )}
+
       {!snapshot && !loading && !error && (
         <p className="py-4 text-center text-sm text-slate-500">
           「更新」ボタンを押すと、現在時点の指標を取得します。

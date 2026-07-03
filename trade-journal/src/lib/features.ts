@@ -1,3 +1,4 @@
+import { lastClosedBarIndex } from "@/lib/barSelection";
 import { rsiLast } from "@/lib/indicators";
 import { roundRatio } from "@/lib/compaction";
 import type { CompactBar, SignalFeatures } from "@/lib/types";
@@ -29,8 +30,8 @@ export function sessionBucket(hour: number): string {
   return "night";
 }
 
-function lastClosedIndex(n: number): number {
-  return n >= 2 ? n - 2 : n - 1;
+function lastClosedIndex5m(bars: CompactBar[], nowSec: number): number {
+  return lastClosedBarIndex(bars, 5, nowSec);
 }
 
 /** 5分足小窓から本日JSTセッションVWAPを算出（出来高ありの足のみ）。 */
@@ -111,7 +112,8 @@ export function buildFeatures(input: FeatureInput): SignalFeatures {
 
   // 5分足由来（最小セット: モメンタム + VWAP乖離）
   if (input.ohlc5 && input.ohlc5.length >= 2) {
-    const idx = lastClosedIndex(input.ohlc5.length);
+    const nowSec = input.barTimeEpochSec;
+    const idx = lastClosedIndex5m(input.ohlc5, nowSec);
     const lastClose = input.ohlc5[idx][4];
     const prevIdx = idx - MOMENTUM_5M_LOOKBACK;
     if (prevIdx >= 0) {

@@ -827,7 +827,7 @@ def trend_1h_ema_slope(
         return False, False, details
     chrono = list(reversed(ohlc_1h))
     n = len(chrono)
-    L = n - 2
+    L = _last_closed_index_chrono(chrono, 60)
     # EMA50 の初値は index period-1。傾きに L-2 が必要。
     if L < EMA_SLOW_1H - 1 or L < 2:
         return False, False, details
@@ -862,18 +862,55 @@ def atr15_last_closed(ohlc_15: list) -> float:
     lows = [float_or(b.get("low"), 0) for b in chrono]
     closes = [float_or(b.get("close"), 0) for b in chrono]
     atr_list = calc_atr_series(highs, lows, closes, ATR_PERIOD_15)
-    idx = len(chrono) - 2
+    idx = _last_closed_index_chrono(chrono, 15)
     if idx < 0 or idx >= len(atr_list):
         return 0.0
     v = atr_list[idx]
     return float(v) if v is not None and v > 0 else 0.0
 
 
-def prev_closed_bar(ohlc_15: list) -> dict | None:
-    """最新確定足の1本前の確定足（API 順で values[2]）。"""
-    if len(ohlc_15) < 3:
+def _last_closed_index_chrono(
+    chrono: list, interval_minutes: int, now_ts: float | None = None
+) -> int:
+    """
+    古い順の足リストから直近確定足のインデックスを返す。
+    末尾が未確定のときだけ1本戻す。データ欠損で末尾が古い場合は誤ってさらに戻さない。
+    """
+    if not chrono:
+        return -1
+    if now_ts is None:
+        now_ts = datetime.now(ZoneInfo("Asia/Tokyo")).timestamp()
+    interval_sec = interval_minutes * 60
+    buffer_sec = 30
+    for i in range(len(chrono) - 1, -1, -1):
+        dt = _parse_bar_datetime_jst(chrono[i].get("datetime", ""))
+        if not dt:
+            continue
+        if now_ts >= dt.timestamp() + interval_sec + buffer_sec:
+            return i
+    return len(chrono) - 2 if len(chrono) >= 2 else 0
+
+
+def last_closed_bar(values: list, interval_minutes: int = 15, now_ts: float | None = None) -> dict | None:
+    """直近確定足（足の終了時刻が現在を過ぎた最新の足）。"""
+    if not values:
         return None
-    return ohlc_15[2]
+    chrono = list(reversed(values))
+    idx = _last_closed_index_chrono(chrono, interval_minutes, now_ts)
+    if idx < 0:
+        return None
+    return chrono[idx]
+
+
+def prev_closed_bar(ohlc_15: list, interval_minutes: int = 15) -> dict | None:
+    """最新確定足の1本前の確定足。"""
+    if not ohlc_15:
+        return None
+    chrono = list(reversed(ohlc_15))
+    idx = _last_closed_index_chrono(chrono, interval_minutes)
+    if idx <= 0:
+        return None
+    return chrono[idx - 1]
 
 
 def calc_parabolic_sar(
@@ -957,13 +994,6 @@ def float_or(s: str, default: float) -> float:
         return default
 
 
-def last_closed_bar(values: list) -> dict | None:
-    """直近確定足（2本目を採用し、未確定足を避ける）。"""
-    if not values or len(values) < 2:
-        return values[0] if values else None
-    return values[1]
-
-
 def long_breakout_oshiritsu_and_high(
     ohlc_15: list, breakout_level: float, current_bar: dict
 ) -> tuple[float | None, float | None]:
@@ -978,7 +1008,7 @@ def long_breakout_oshiritsu_and_high(
     if len(ohlc_15) < 2:
         return (None, None)
     chrono = list(reversed(ohlc_15))
-    end_idx = len(chrono) - 2
+    end_idx = _last_closed_index_chrono(chrono, 15)
     if end_idx < 0:
         return (None, None)
     last_below = None
@@ -1020,7 +1050,7 @@ def short_breakout_oshiritsu_and_low(
     if len(ohlc_15) < 2:
         return (None, None)
     chrono = list(reversed(ohlc_15))
-    end_idx = len(chrono) - 2
+    end_idx = _last_closed_index_chrono(chrono, 15)
     if end_idx < 0:
         return (None, None)
     last_above = None

@@ -4,7 +4,16 @@
  */
 
 import { atr, ema, sma } from "@/lib/indicators";
+import {
+  barLagMinutes,
+  lastClosedBarIndex,
+  staleDataWarningJa
+} from "@/lib/barSelection";
 import type { CompactBar } from "@/lib/types";
+
+const INTERVAL_1H = 60;
+const INTERVAL_15M = 15;
+const INTERVAL_5M = 5;
 
 const EMA_FAST_1H = 20;
 const EMA_SLOW_1H = 50;
@@ -62,6 +71,8 @@ export interface NikkeiMarketSnapshot {
   oshiritsuShort: number | null;
   breakoutHigh: number | null;
   breakoutLow: number | null;
+  /** 判定足が取得時刻より大幅に古い場合の警告（Yahoo 欠損など） */
+  staleDataWarning: string | null;
 }
 
 function jstParts(epochSec: number): { y: number; m: number; d: number; h: number; min: number; wd: number } {
@@ -140,14 +151,12 @@ function computePrevSessionHl(bars15: CompactBar[]): { high: number; low: number
   return null;
 }
 
-function lastClosedIndex(n: number): number {
-  return n >= 2 ? n - 2 : n - 1;
-}
-
 function trendEmaSlope(
   bars: CompactBar[],
   emaFastPeriod: number,
-  emaSlowPeriod: number
+  emaSlowPeriod: number,
+  intervalMinutes: number,
+  nowSec: number
 ): {
   up: boolean;
   down: boolean;
@@ -156,7 +165,7 @@ function trendEmaSlope(
   emaSlow: number | null;
 } {
   const n = bars.length;
-  const L = lastClosedIndex(n);
+  const L = lastClosedBarIndex(bars, intervalMinutes, nowSec);
   if (n < 3 || L < emaSlowPeriod - 1 || L < 2) {
     return { up: false, down: false, close: null, emaFast: null, emaSlow: null };
   }
@@ -215,29 +224,36 @@ function sessionVwapAtBar(bars: CompactBar[], throughIdx: number): number | null
   return sumV > 0 ? sumPv / sumV : null;
 }
 
-function atrAtLastClosed(bars: CompactBar[], period = ATR_PERIOD_15): number | null {
+function atrAtLastClosed(
+  bars: CompactBar[],
+  intervalMinutes: number,
+  nowSec: number,
+  period = ATR_PERIOD_15
+): number | null {
   if (bars.length < period + 3) return null;
   const highs = bars.map((b) => b[2]);
   const lows = bars.map((b) => b[3]);
   const closes = bars.map((b) => b[4]);
   const atrList = atr(highs, lows, closes, period);
-  const idx = lastClosedIndex(bars.length);
+  const idx = lastClosedBarIndex(bars, intervalMinutes, nowSec);
+  if (idx < 0) return null;
   const v = atrList[idx];
   return v != null && v > 0 ? v : null;
 }
 
 /** 5分足から短期指標を算出（表示パネル専用）。 */
-export function buildFiveMinMetrics(bars5: CompactBar[]): NikkeiFiveMinMetrics | null {
+export function buildFiveMinMetrics(bars5: CompactBar[], nowSec?: number): NikkeiFiveMinMetrics | null {
+  const now = nowSec ?? Math.floor(Date.now() / 1000);
   const n = bars5.length;
   if (n < 2) return null;
-  const idx = lastClosedIndex(n);
+  const idx = lastClosedBarIndex(bars5, INTERVAL_5M, now);
   const bar = bars5[idx];
   const close = bar[4];
   if (close <= 0) return null;
 
   const closes = bars5.map((b) => b[4]);
   const ma20 = sma(closes, 20)[idx];
-  const atr14 = atrAtLastClosed(bars5);
+  const atr14 = atrAtLastClosed(bars5, INTERVAL_5M, now);
   const vwap = sessionVwapAtBar(bars5, idx);
 
   return {
@@ -253,10 +269,11 @@ export function buildFiveMinMetrics(bars5: CompactBar[]): NikkeiFiveMinMetrics |
 function longOshiritsu(
   bars15: CompactBar[],
   breakoutLevel: number,
-  currentClose: number
+  currentClose: number,
+  nowSec: number
 ): { pct: number | null; breakoutHigh: number | null } {
   const n = bars15.length;
-  const endIdx = lastClosedIndex(n);
+  const endIdx = lastClosedBarIndex(bars15, INTERVAL_15M, nowSec);
   if (endIdx < 0) return { pct: null, breakoutHigh: null };
   let lastBelow: number | null = null;
   for (let i = endIdx; i >= 0; i--) {
@@ -287,10 +304,11 @@ function longOshiritsu(
 function shortOshiritsu(
   bars15: CompactBar[],
   breakoutLevel: number,
-  currentClose: number
+  currentClose: number,
+  nowSec: number
 ): { pct: number | null; breakoutLow: number | null } {
   const n = bars15.length;
-  const endIdx = lastClosedIndex(n);
+  const endIdx = lastClosedBarIndex(bars15, INTERVAL_15M, nowSec);
   if (endIdx < 0) return { pct: null, breakoutLow: null };
   let lastAbove: number | null = null;
   for (let i = endIdx; i >= 0; i--) {
@@ -336,9 +354,11 @@ export function buildNikkeiMarketSnapshot(
   bars1h: CompactBar[],
   bars5?: CompactBar[]
 ): NikkeiMarketSnapshot | null {
+  const fetchedAtSec = Math.floor(Date.now() / 1000);
   const n = bars15.length;
   if (n < 2) return null;
-  const idx = lastClosedIndex(n);
+  const idx = lastClosedBarIndex(bars15, INTERVAL_15M, fetchedAtSec);
+  if (idx < 0) return null;
   const bar = bars15[idx];
   const close = bar[4];
   if (close <= 0) return null;
@@ -350,7 +370,7 @@ export function buildNikkeiMarketSnapshot(
   const smaList = sma(closes15, 20);
   const ma20 = smaList[idx];
 
-  const atr15 = atrAtLastClosed(bars15);
+  const atr15 = atrAtLastClosed(bars15, INTERVAL_15M, fetchedAtSec);
   const buf = atr15 && atr15 > 0 ? BREAKOUT_ATR_MULT * atr15 : 0;
   const longThreshold = prevHl.high + buf;
   const shortThreshold = prevHl.low - buf;
@@ -362,19 +382,33 @@ export function buildNikkeiMarketSnapshot(
   const firstBreakShort =
     prevClose != null && prevClose >= shortThreshold && close < shortThreshold;
 
-  const trend1h = trendEmaSlope(bars1h, EMA_FAST_1H, EMA_SLOW_1H);
-  const trend15m = trendEmaSlope(bars15, EMA_FAST_15M, EMA_SLOW_15M);
+  const trend1h = trendEmaSlope(bars1h, EMA_FAST_1H, EMA_SLOW_1H, INTERVAL_1H, fetchedAtSec);
+  const trend15m = trendEmaSlope(bars15, EMA_FAST_15M, EMA_SLOW_15M, INTERVAL_15M, fetchedAtSec);
 
-  const longO = longOshiritsu(bars15, prevHl.high, close);
-  const shortO = shortOshiritsu(bars15, prevHl.low, close);
+  const longO = longOshiritsu(bars15, prevHl.high, close, fetchedAtSec);
+  const shortO = shortOshiritsu(bars15, prevHl.low, close, fetchedAtSec);
   const vwap = sessionVwapAtBar(bars15, idx);
 
-  const fiveMin = bars5?.length ? buildFiveMinMetrics(bars5) : null;
+  const fiveMin = bars5?.length ? buildFiveMinMetrics(bars5, fetchedAtSec) : null;
+
+  const lag15 = barLagMinutes(bar[0], INTERVAL_15M, fetchedAtSec);
+  const warn15 = staleDataWarningJa(lag15, "15分足");
+  const lag5 =
+    fiveMin && bars5?.length
+      ? barLagMinutes(
+          bars5[lastClosedBarIndex(bars5, INTERVAL_5M, fetchedAtSec)][0],
+          INTERVAL_5M,
+          fetchedAtSec
+        )
+      : 0;
+  const warn5 = fiveMin ? staleDataWarningJa(lag5, "5分足") : null;
+  const staleDataWarning =
+    [warn15, warn5].filter(Boolean).join(" ") || null;
 
   return {
     symbol,
     barTimeJst: fmtJstFromEpoch(bar[0]),
-    fetchedAtJst: fmtJstFromEpoch(Math.floor(Date.now() / 1000)),
+    fetchedAtJst: fmtJstFromEpoch(fetchedAtSec),
     close,
     fiveMin,
     ma20_15m: ma20,
@@ -405,6 +439,7 @@ export function buildNikkeiMarketSnapshot(
     oshiritsuLong: longO.pct != null ? Math.round(longO.pct * 10) / 10 : null,
     oshiritsuShort: shortO.pct != null ? Math.round(shortO.pct * 10) / 10 : null,
     breakoutHigh: longO.breakoutHigh,
-    breakoutLow: shortO.breakoutLow
+    breakoutLow: shortO.breakoutLow,
+    staleDataWarning
   };
 }
