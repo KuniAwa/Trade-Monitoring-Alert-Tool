@@ -1,9 +1,10 @@
-"use client";
+﻿"use client";
 
 import { usePathname } from "next/navigation";
 
 const ITEMS = [
   { href: "/", label: "ホーム", icon: "🏠" },
+  { href: "/history", label: "履歴", icon: "🗂" },
   { href: "/trades/new", label: "記録", icon: "➕" },
   { href: "/analysis", label: "分析", icon: "📈" }
 ];
@@ -19,7 +20,7 @@ export function BottomNav() {
             key={item.href}
             href={item.href}
             className={`flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] ${
-              active ? "text-brand font-semibold" : "text-slate-500"
+              active ? "font-semibold text-brand" : "text-slate-500"
             }`}
           >
             <span className="text-lg leading-none">{item.icon}</span>
