@@ -55,7 +55,7 @@ export function NikkeiMarketPanel() {
         <div>
           <h2 className="text-sm font-semibold text-slate-800">日経先物・投資判断用指標</h2>
           <p className="mt-0.5 text-[11px] text-slate-400">
-            Yahoo 15分足・1時間足（アラートと同一）＋5分足（表示専用）。「更新」でその時点を取得。
+            環境認識＝15分足、執行タイミング＝5分足。1時間足は参考。アラート条件は変更なし。「更新」で取得。
           </p>
         </div>
         <button
@@ -89,17 +89,8 @@ export function NikkeiMarketPanel() {
           </div>
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <div className={`rounded-lg px-3 py-2 ${trendBg(snapshot.trend1hUp, snapshot.trend1hDown)}`}>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">環境認識</div>
-              <div className="text-[11px] text-slate-500">1時間足トレンド（EMA20/50・サマリーメールと同じ）</div>
-              <div
-                className={`mt-0.5 text-base font-bold ${trendColor(snapshot.trend1hUp, snapshot.trend1hDown)}`}
-              >
-                {snapshot.trend1hJa}
-              </div>
-            </div>
             <div className={`rounded-lg px-3 py-2 ${trendBg(snapshot.trend15mUp, snapshot.trend15mDown)}`}>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">執行タイミング</div>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">環境認識</div>
               <div className="text-[11px] text-slate-500">
                 15分足トレンド（EMA{snapshot.emaFast15mPeriod}/{snapshot.emaSlow15mPeriod}）
               </div>
@@ -109,12 +100,25 @@ export function NikkeiMarketPanel() {
                 {snapshot.trend15mJa}
               </div>
             </div>
+            <div className={`rounded-lg px-3 py-2 ${trendBg(snapshot.trend5mUp, snapshot.trend5mDown)}`}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">執行タイミング</div>
+              <div className="text-[11px] text-slate-500">
+                5分足トレンド（EMA{snapshot.emaFast5mPeriod}/{snapshot.emaSlow5mPeriod}）
+              </div>
+              <div
+                className={`mt-0.5 text-base font-bold ${trendColor(snapshot.trend5mUp, snapshot.trend5mDown)}`}
+              >
+                {snapshot.trend5mJa}
+              </div>
+            </div>
           </div>
 
           {snapshot.fiveMin && (
-            <MetricBlock title="5分足（短期・表示専用）">
+            <MetricBlock title="5分足（執行タイミング）">
               <Row label="判定足" value={snapshot.fiveMin.barTimeJst} />
               <Row label="終値" value={fmt(snapshot.fiveMin.close)} />
+              <Row label={`EMA(${snapshot.emaFast5mPeriod})`} value={fmt(snapshot.emaFast5m)} />
+              <Row label={`EMA(${snapshot.emaSlow5mPeriod})`} value={fmt(snapshot.emaSlow5m)} />
               <Row label="20MA" value={fmt(snapshot.fiveMin.ma20)} />
               <Row label="ATR(14)" value={fmt(snapshot.fiveMin.atr14)} highlight />
               <Row label={snapshot.fiveMin.vwapLabel} value={fmt(snapshot.fiveMin.vwap)} />
@@ -133,8 +137,10 @@ export function NikkeiMarketPanel() {
             </MetricBlock>
           )}
 
-          <MetricBlock title="15分足">
+          <MetricBlock title="15分足（環境認識）">
             <Row label="終値" value={fmt(snapshot.close)} />
+            <Row label={`EMA(${snapshot.emaFast15mPeriod})`} value={fmt(snapshot.emaFast15m)} />
+            <Row label={`EMA(${snapshot.emaSlow15mPeriod})`} value={fmt(snapshot.emaSlow15m)} />
             <Row label="20MA" value={fmt(snapshot.ma20_15m)} />
             <Row label="ATR(14)" value={fmt(snapshot.atr15)} highlight />
             <Row label={snapshot.vwapLabel} value={fmt(snapshot.vwap)} />
@@ -161,18 +167,12 @@ export function NikkeiMarketPanel() {
             <Row label="前日安値" value={fmt(snapshot.prevLow)} />
           </MetricBlock>
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <MetricBlock title="1時間足（環境認識）">
-              <Row label="終値" value={fmt(snapshot.close1h)} />
-              <Row label="EMA(20)" value={fmt(snapshot.ema20_1h)} />
-              <Row label="EMA(50)" value={fmt(snapshot.ema50_1h)} />
-            </MetricBlock>
-            <MetricBlock title="15分足（執行タイミング）">
-              <Row label="終値" value={fmt(snapshot.close15m)} />
-              <Row label={`EMA(${snapshot.emaFast15mPeriod})`} value={fmt(snapshot.emaFast15m)} />
-              <Row label={`EMA(${snapshot.emaSlow15mPeriod})`} value={fmt(snapshot.emaSlow15m)} />
-            </MetricBlock>
-          </div>
+          <MetricBlock title="1時間足（参考・アラートと同じEMA20/50）">
+            <Row label="トレンド判定" value={snapshot.trend1hJa} />
+            <Row label="終値" value={fmt(snapshot.close1h)} />
+            <Row label="EMA(20)" value={fmt(snapshot.ema20_1h)} />
+            <Row label="EMA(50)" value={fmt(snapshot.ema50_1h)} />
+          </MetricBlock>
 
           <MetricBlock title="押し率">
             <Row

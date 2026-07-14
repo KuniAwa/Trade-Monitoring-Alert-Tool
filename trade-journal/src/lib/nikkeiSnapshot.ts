@@ -15,11 +15,15 @@ const INTERVAL_1H = 60;
 const INTERVAL_15M = 15;
 const INTERVAL_5M = 5;
 
+/** 1時間足トレンド（参考表示・アラートと同じ期間） */
 const EMA_FAST_1H = 20;
 const EMA_SLOW_1H = 50;
-/** 15分足トレンド（執行タイミング用・1時間足より短い期間） */
-const EMA_FAST_15M = 9;
-const EMA_SLOW_15M = 21;
+/** 15分足トレンド（環境認識） */
+const EMA_FAST_15M = 20;
+const EMA_SLOW_15M = 50;
+/** 5分足トレンド（執行タイミング） */
+const EMA_FAST_5M = 9;
+const EMA_SLOW_5M = 21;
 const ATR_PERIOD_15 = 14;
 const BREAKOUT_ATR_MULT = 0.2;
 const BREAKOUT_RECENT_15M_BARS = 128;
@@ -67,6 +71,14 @@ export interface NikkeiMarketSnapshot {
   trend15mJa: string;
   trend15mUp: boolean;
   trend15mDown: boolean;
+  close5m: number | null;
+  emaFast5m: number | null;
+  emaSlow5m: number | null;
+  emaFast5mPeriod: number;
+  emaSlow5mPeriod: number;
+  trend5mJa: string;
+  trend5mUp: boolean;
+  trend5mDown: boolean;
   oshiritsuLong: number | null;
   oshiritsuShort: number | null;
   breakoutHigh: number | null;
@@ -384,6 +396,9 @@ export function buildNikkeiMarketSnapshot(
 
   const trend1h = trendEmaSlope(bars1h, EMA_FAST_1H, EMA_SLOW_1H, INTERVAL_1H, fetchedAtSec);
   const trend15m = trendEmaSlope(bars15, EMA_FAST_15M, EMA_SLOW_15M, INTERVAL_15M, fetchedAtSec);
+  const trend5m = bars5?.length
+    ? trendEmaSlope(bars5, EMA_FAST_5M, EMA_SLOW_5M, INTERVAL_5M, fetchedAtSec)
+    : { up: false, down: false, close: null, emaFast: null, emaSlow: null };
 
   const longO = longOshiritsu(bars15, prevHl.high, close, fetchedAtSec);
   const shortO = shortOshiritsu(bars15, prevHl.low, close, fetchedAtSec);
@@ -436,6 +451,14 @@ export function buildNikkeiMarketSnapshot(
     trend15mJa: trendJa(trend15m.up, trend15m.down),
     trend15mUp: trend15m.up,
     trend15mDown: trend15m.down,
+    close5m: trend5m.close,
+    emaFast5m: trend5m.emaFast,
+    emaSlow5m: trend5m.emaSlow,
+    emaFast5mPeriod: EMA_FAST_5M,
+    emaSlow5mPeriod: EMA_SLOW_5M,
+    trend5mJa: trendJa(trend5m.up, trend5m.down),
+    trend5mUp: trend5m.up,
+    trend5mDown: trend5m.down,
     oshiritsuLong: longO.pct != null ? Math.round(longO.pct * 10) / 10 : null,
     oshiritsuShort: shortO.pct != null ? Math.round(shortO.pct * 10) / 10 : null,
     breakoutHigh: longO.breakoutHigh,
