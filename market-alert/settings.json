@@ -9,5 +9,8 @@
   },
   "summary": {
     "include_nikkei": false
+  },
+  "alerts": {
+    "include_nikkei": false
   }
 }

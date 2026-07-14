@@ -554,6 +554,14 @@ def summary_include_nikkei(settings: dict) -> bool:
     return bool(summary.get("include_nikkei"))
 
 
+def alerts_include_nikkei(settings: dict) -> bool:
+    """settings.json の alerts.include_nikkei。未設定時は True（日経もアラート監視する）。"""
+    alerts = settings.get("alerts") or {}
+    if "include_nikkei" not in alerts:
+        return True
+    return bool(alerts.get("include_nikkei"))
+
+
 def is_within_monitor_window(settings: dict) -> bool:
     """現在時刻（JST）が監視時間内か。"""
     tz = ZoneInfo("Asia/Tokyo")
@@ -1492,7 +1500,7 @@ def should_send_daily_summary() -> tuple[bool, str | None, str]:
     """
     平日のサマリー送信タイミングを判定。
     - 平日かつ JST 23:00〜23:14（Cron のずれ対策）に1回だけ、監視対象銘柄を1通にまとめて送信 → ("all", now_str)
-      （settings.json の summary.include_nikkei が false のとき日経は除外。アラート監視は継続）
+      （settings.json の summary.include_nikkei が false のとき日経は除外）
     戻り値: (送信するか, グループ "all"|None, 表示用 JST 文字列)
     """
     tz = ZoneInfo("Asia/Tokyo")
@@ -2005,8 +2013,11 @@ def run_checks() -> dict:
     if within_window and not should_send:
         symbols_fx = [s for s in symbols if not s[2]]
         symbols_nikkei = [s for s in symbols if s[2]]
+        if not alerts_include_nikkei(settings):
+            symbols_nikkei = []
 
         # FX・日経とも settings.json の監視時間内（既定 09:00〜23:00 JST）で評価。
+        # 日経は alerts.include_nikkei が false のときスキップ（再開時は true に戻す）。
         # 日経 OHLC は Yahoo のため長い待機は不要。FX 連続呼び出し後に短い間隔のみ入れる。
         for symbol, label, use_jst_1545 in symbols_fx:
             try:
