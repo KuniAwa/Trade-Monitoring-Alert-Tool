@@ -1,0 +1,16 @@
+# dependencies / build
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# env & local db
+.env
+.env.local
+.env*.local
+prisma/dev.db
+prisma/dev.db-journal
+prisma/*.bak
+
+# Vercel
+.vercel/

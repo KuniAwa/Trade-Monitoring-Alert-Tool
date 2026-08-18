@@ -1,0 +1,135 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma enum は使わず、String カラム + TypeScript union で扱う。
+
+model JgaapStandard {
+  id               String    @id @default(cuid())
+  standardId       String    @unique
+  titleJa          String
+  documentKind     String    @default("STANDARD")
+  documentNumberJa String    @default("")
+  effectiveDate    String?
+  sourceUrl        String?
+  outlineJson      String    @default("[]")
+  licenseNote      String    @default("公益財団法人 財務会計基準機構（FASF）／企業会計基準委員会（ASBJ）の基準。個人利用・引用は利用条件に従う。")
+  ingestSource     String    @default("HTML")
+  lastIngestedAt   DateTime?
+  paragraphCount   Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  paragraphs JgaapParagraph[]
+  cases      JgaapCaseStandard[]
+}
+
+model JgaapParagraph {
+  id              String        @id @default(cuid())
+  standard        JgaapStandard @relation(fields: [standardId], references: [id], onDelete: Cascade)
+  standardId      String
+  paragraphId     String
+  kind            String
+  quoteJa         String
+  sectionPathJa   String        @default("")
+  obligationLevel String
+  orderIndex      Int
+  reviewStatus    String        @default("UNREVIEWED")
+  reviewedAt      DateTime?
+  reviewedNoteJa  String        @default("")
+  notesJa         String        @default("")
+  editedManually  Boolean       @default(false)
+  editedAt        DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([standardId, paragraphId])
+}
+
+model JgaapCase {
+  id                   String   @id @default(cuid())
+  kind                 String   @default("JUDGMENT")
+  title                String
+  topicLabel           String?
+  transactionSummaryJa String
+  initialQuestionJa    String
+  notesJa              String   @default("")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  standardLinks     JgaapStandardLink[]
+  standards         JgaapCaseStandard[]
+  searchResults     JgaapSearchResult[]
+  conversationTurns JgaapConversationTurn[]
+  draftAnswers      JgaapDraftAnswer[]
+  feedbacks         JgaapFeedback[]
+}
+
+model JgaapStandardLink {
+  id        String    @id @default(cuid())
+  case      JgaapCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+  label     String?
+  url       String
+  createdAt DateTime  @default(now())
+}
+
+model JgaapCaseStandard {
+  case       JgaapCase     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId     String
+  standard   JgaapStandard @relation(fields: [standardId], references: [id], onDelete: Cascade)
+  standardId String
+
+  @@id([caseId, standardId])
+}
+
+model JgaapSearchResult {
+  id        String    @id @default(cuid())
+  case      JgaapCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+  query     String
+  title     String
+  snippet   String
+  url       String
+  source    String
+  rawJson   String?
+  createdAt DateTime  @default(now())
+}
+
+model JgaapConversationTurn {
+  id        String    @id @default(cuid())
+  case      JgaapCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+  role      String    @default("USER")
+  mode      String    @default("FOLLOWUP_QUESTION")
+  contentJa String
+  createdAt DateTime  @default(now())
+}
+
+model JgaapDraftAnswer {
+  id                   String    @id @default(cuid())
+  case                 JgaapCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId               String
+  kind                 String    @default("JUDGMENT")
+  structuredAnswerJson String
+  summaryJa            String?
+  createdAt            DateTime  @default(now())
+
+  feedbacks JgaapFeedback[]
+}
+
+model JgaapFeedback {
+  id        String           @id @default(cuid())
+  case      JgaapCase        @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+  draft     JgaapDraftAnswer? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  draftId   String?
+  rating    String           @default("ADEQUATE")
+  commentJa String?
+  createdAt DateTime         @default(now())
+}
