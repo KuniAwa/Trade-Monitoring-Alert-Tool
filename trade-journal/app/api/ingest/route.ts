@@ -40,7 +40,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Invalid barTime" }, { status: 400 });
   }
 
-  const { numeric, ohlc15, ohlc5 } = normalizeIngestPayload(payload);
+  const market = payload.market === "fx" ? "fx" : "nikkei";
+  const symbol =
+    typeof payload.symbol === "string" && payload.symbol.trim()
+      ? payload.symbol.trim()
+      : market === "fx"
+        ? "JPY=X"
+        : "NIY=F";
+  const { numeric, ohlc15, ohlc5 } = normalizeIngestPayload({ ...payload, market, symbol });
   const source = ["scan", "alert", "summary"].includes(payload.source) ? payload.source : "scan";
   const alertDir = payload.alertDir === "long" || payload.alertDir === "short" ? payload.alertDir : null;
 
@@ -63,12 +70,14 @@ export async function POST(req: NextRequest) {
 
   // 容量削減: 同一足・同一ソースの重複は1件に集約（scan の取りこぼし再送対策）
   const existing = await prisma.signal.findFirst({
-    where: { barTime, source }
+    where: { barTime, source, market, symbol }
   });
 
   const data = {
     barTime,
     source,
+    market,
+    symbol,
     alertDir,
     close: numeric.close ?? payload.close,
     prevHigh: numeric.prevHigh,

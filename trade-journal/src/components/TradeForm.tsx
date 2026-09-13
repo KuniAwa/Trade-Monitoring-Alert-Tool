@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { FX_PAIRS, defaultSymbol, marketBasePath, type MarketKind } from "@/lib/markets";
 
 export interface TradeFormInitial {
   id?: string;
@@ -17,6 +18,8 @@ export interface TradeFormInitial {
   emotion: string;
   note: string;
   isVirtual: boolean;
+  market?: MarketKind;
+  symbol?: string;
 }
 
 function pad(n: number): string {
@@ -61,8 +64,11 @@ export function TradeForm({
   const [emotion, setEmotion] = useState(initial.emotion);
   const [note, setNote] = useState(initial.note);
   const [isVirtual, setIsVirtual] = useState(initial.isVirtual);
+  const market: MarketKind = initial.market === "fx" ? "fx" : "nikkei";
+  const [symbol, setSymbol] = useState(initial.symbol || defaultSymbol(market));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const base = marketBasePath(market);
 
   async function submit() {
     setError(null);
@@ -73,6 +79,8 @@ export function TradeForm({
     setSubmitting(true);
     try {
       const payload = {
+        market,
+        symbol,
         direction,
         entryAt: entryAt ? new Date(entryAt).toISOString() : undefined,
         entryPrice,
@@ -95,7 +103,7 @@ export function TradeForm({
       });
       const data = (await res.json()) as { ok: boolean; trade?: { id: string }; error?: string };
       if (!data.ok || !data.trade) throw new Error(data.error ?? "保存に失敗しました");
-      router.push(`/trades/${data.trade.id}`);
+      router.push(`${base}/trades/${data.trade.id}`);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存に失敗しました");
@@ -108,6 +116,26 @@ export function TradeForm({
       <h1 className="text-base font-semibold text-slate-800">
         {mode === "edit" ? "取引を編集" : "取引を記録"}
       </h1>
+
+      {market === "fx" && (
+        <div>
+          <span className="mb-1 block text-xs font-medium text-slate-500">通貨ペア</span>
+          <div className="flex flex-wrap gap-2">
+            {FX_PAIRS.map((p) => (
+              <button
+                key={p.yahoo}
+                type="button"
+                onClick={() => setSymbol(p.yahoo)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                  symbol === p.yahoo ? "border-brand bg-brand text-white" : "bg-white text-slate-600"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2">
         <button

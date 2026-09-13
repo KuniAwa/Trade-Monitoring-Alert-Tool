@@ -1,21 +1,5 @@
-import { TradeForm } from "@/components/TradeForm";
+import { redirect } from "next/navigation";
 
-export default function NewTradePage() {
-  return (
-    <TradeForm
-      mode="create"
-      initial={{
-        direction: "long",
-        entryPrice: "",
-        quantity: "1",
-        stopPrice: "",
-        takeProfit: "",
-        exitPrice: "",
-        reason: "",
-        emotion: "",
-        note: "",
-        isVirtual: false
-      }}
-    />
-  );
+export default function LegacyNewTradePage() {
+  redirect("/nikkei/trades/new");
 }

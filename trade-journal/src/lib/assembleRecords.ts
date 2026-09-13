@@ -16,11 +16,14 @@ export interface AssembledAnalysis {
  * 直近のシグナル（仮想）と実取引を1つの母数にまとめ、集計する。
  * lookbackDays 以内を対象（結果ラベルは Yahoo の前方足が取れる範囲のみ算出）。
  */
-export async function assembleAnalysis(lookbackDays = 35): Promise<AssembledAnalysis> {
+export async function assembleAnalysis(
+  lookbackDays = 35,
+  market: "nikkei" | "fx" = "nikkei"
+): Promise<AssembledAnalysis> {
   const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
 
   const signals = (await prisma.signal.findMany({
-    where: { barTime: { gte: since } },
+    where: { barTime: { gte: since }, market },
     orderBy: { barTime: "desc" },
     take: 2000
   })) as unknown as SignalLike[];
@@ -28,7 +31,7 @@ export async function assembleAnalysis(lookbackDays = 35): Promise<AssembledAnal
   const { records: signalRecords, forwardBarsAvailable } = await buildSignalRecords(signals);
 
   const trades = await prisma.trade.findMany({
-    where: { entryAt: { gte: since } },
+    where: { entryAt: { gte: since }, market },
     orderBy: { entryAt: "desc" },
     take: 1000,
     include: { signal: true }

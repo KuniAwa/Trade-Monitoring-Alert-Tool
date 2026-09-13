@@ -1,7 +1,7 @@
 {
-  "name": "日経先物トレード日誌",
+  "name": "トレード日誌",
   "short_name": "トレード日誌",
-  "description": "日経225先物の取引実績記録とAI改善分析",
+  "description": "日経225とFXの取引実績記録とAI改善分析",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f8fafc",

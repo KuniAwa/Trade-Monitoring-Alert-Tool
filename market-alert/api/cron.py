@@ -35,6 +35,11 @@ YAHOO_HTTP_HEADERS = {
     "Accept": "application/json,text/plain,*/*",
 }
 YAHOO_NIKKEI_CANDIDATES = ["NIY=F", "^N225"]
+YAHOO_FX_SYMBOLS = {
+    "USD/JPY": "JPY=X",
+    "EUR/JPY": "EURJPY=X",
+    "AUD/JPY": "AUDJPY=X",
+}
 INTERVAL_15 = "15min"
 INTERVAL_1H = "1h"
 INTERVAL_DAY = "1day"
@@ -102,8 +107,24 @@ def _twelvedata_get(path: str, params: dict, symbol: str, context: str) -> dict:
     raise last_err if last_err else ValueError(f"Twelve Data request failed for {symbol} ({context})")
 
 
+def yahoo_ohlc_symbol(symbol: str) -> str | None:
+    """Twelve Data 銘柄名を Yahoo Chart 用シンボルへ変換。日経はそのまま。"""
+    if symbol in YAHOO_NIKKEI_CANDIDATES:
+        return symbol
+    return YAHOO_FX_SYMBOLS.get(symbol)
+
+
 def get_daily_ohlc(api_key: str, symbol: str) -> list:
-    """日足を取得（直近3本、新しい順）。前日高値・安値は NY 基準のため America/New_York で取得。"""
+    """日足を取得（直近3本、新しい順）。Yahoo 優先、失敗時のみ Twelve Data。"""
+    ys = yahoo_ohlc_symbol(symbol)
+    if ys:
+        try:
+            return _fetch_yahoo_chart(ys, "1d", "1mo")[:OUTPUTSIZE_DAY]
+        except Exception:
+            if not api_key:
+                raise
+    if not api_key:
+        raise ValueError(f"No Yahoo/Twelve Data daily source for {symbol}")
     data = _twelvedata_get(
         "/time_series",
         {
@@ -405,9 +426,16 @@ def get_prev_session_high_low_jst_1545(
 
 
 def get_15min_ohlc(api_key: str, symbol: str) -> list:
-    """15分足を取得（直近30本、新しい順）。日本時間で返す。"""
-    if symbol in YAHOO_NIKKEI_CANDIDATES:
-        return _fetch_yahoo_chart(symbol, "15m", "1mo")
+    """15分足を取得（直近30本、新しい順）。日本時間で返す。Yahoo 優先。"""
+    ys = yahoo_ohlc_symbol(symbol)
+    if ys:
+        try:
+            return _fetch_yahoo_chart(ys, "15m", "1mo")
+        except Exception:
+            if not api_key:
+                raise
+    if not api_key:
+        raise ValueError(f"No Yahoo/Twelve Data 15m source for {symbol}")
     data = _twelvedata_get(
         "/time_series",
         {
@@ -427,9 +455,10 @@ def get_15min_ohlc(api_key: str, symbol: str) -> list:
 
 
 def get_5min_ohlc(api_key: str, symbol: str) -> list:
-    """5分足を取得（新しい順）。日経 Yahoo のみ。trade-journal 分析用。"""
-    if symbol in YAHOO_NIKKEI_CANDIDATES:
-        return _fetch_yahoo_chart(symbol, "5m", "5d")
+    """5分足を取得（新しい順）。Yahoo（日経・FX）。trade-journal 分析用。"""
+    ys = yahoo_ohlc_symbol(symbol)
+    if ys:
+        return _fetch_yahoo_chart(ys, "5m", "5d")
     return []
 
 
@@ -441,7 +470,7 @@ def fetch_nikkei_market_data(api_key: str, symbol: str) -> dict:
     ohlc_15 = get_15min_ohlc(api_key, symbol)
     ohlc_1h = get_1h_ohlc(api_key, symbol)
     ohlc_5: list | None = None
-    if symbol in YAHOO_NIKKEI_CANDIDATES:
+    if yahoo_ohlc_symbol(symbol):
         try:
             ohlc_5 = get_5min_ohlc(api_key, symbol)
         except Exception:
@@ -450,9 +479,16 @@ def fetch_nikkei_market_data(api_key: str, symbol: str) -> dict:
 
 
 def get_1h_ohlc(api_key: str, symbol: str) -> list:
-    """1時間足を取得（新しい順、本数は OUTPUTSIZE_1H）。日本時間で返す。"""
-    if symbol in YAHOO_NIKKEI_CANDIDATES:
-        return _fetch_yahoo_chart(symbol, "60m", "1mo")
+    """1時間足を取得（新しい順、本数は OUTPUTSIZE_1H）。日本時間で返す。Yahoo 優先。"""
+    ys = yahoo_ohlc_symbol(symbol)
+    if ys:
+        try:
+            return _fetch_yahoo_chart(ys, "60m", "1mo")
+        except Exception:
+            if not api_key:
+                raise
+    if not api_key:
+        raise ValueError(f"No Yahoo/Twelve Data 1h source for {symbol}")
     data = _twelvedata_get(
         "/time_series",
         {
@@ -560,6 +596,30 @@ def alerts_include_nikkei(settings: dict) -> bool:
     if "include_nikkei" not in alerts:
         return True
     return bool(alerts.get("include_nikkei"))
+
+
+def alerts_include_fx(settings: dict) -> bool:
+    """settings.json の alerts.include_fx。未設定時は True。"""
+    alerts = settings.get("alerts") or {}
+    if "include_fx" not in alerts:
+        return True
+    return bool(alerts.get("include_fx"))
+
+
+def summary_include_fx(settings: dict) -> bool:
+    """settings.json の summary.include_fx。未設定時は True。"""
+    summary = settings.get("summary") or {}
+    if "include_fx" not in summary:
+        return True
+    return bool(summary.get("include_fx"))
+
+
+def ingest_fx_enabled(settings: dict) -> bool:
+    """settings.json の ingest.fx。未設定時は True（FB Tool へ FX スナップショット投入）。"""
+    ingest = settings.get("ingest") or {}
+    if "fx" not in ingest:
+        return True
+    return bool(ingest.get("fx"))
 
 
 def is_within_monitor_window(settings: dict) -> bool:
@@ -1604,15 +1664,16 @@ def build_snapshot(
     rs_short = risk_scenario_short(close, prev_low, atr15)
 
     # トレード日誌（trade-journal）への投入用に、容量削減した OHLC 小窓を同梱する。
-    ohlc15_tail = _compact_ohlc15_tail(ohlc_15)
+    price_decimals = 3 if symbol in YAHOO_FX_SYMBOLS else 1
+    ohlc15_tail = _compact_ohlc15_tail(ohlc_15, price_decimals=price_decimals)
     ohlc5_tail: list = []
-    if use_jst_session_1545 and ohlc_5 is None and symbol in YAHOO_NIKKEI_CANDIDATES:
+    if ohlc_5 is None and yahoo_ohlc_symbol(symbol):
         try:
             ohlc_5 = get_5min_ohlc(api_key, symbol)
         except Exception:
             ohlc_5 = None
     if ohlc_5:
-        ohlc5_tail = _compact_ohlc5_tail(ohlc_5)
+        ohlc5_tail = _compact_ohlc5_tail(ohlc_5, price_decimals=price_decimals)
 
     return {
         "symbol": symbol,
@@ -1860,7 +1921,7 @@ TRADE_JOURNAL_MAX_15M_BARS = 20
 TRADE_JOURNAL_MAX_5M_BARS = 40
 
 
-def _compact_ohlc_bars(ohlc: list, max_bars: int) -> list:
+def _compact_ohlc_bars(ohlc: list, max_bars: int, price_decimals: int = 1) -> list:
     """
     OHLC（新しい順）から直近 max_bars 本だけを取り出し、
     [[epochSec, open, high, low, close, volume], ...]（古い順・丸め済み）に変換する。
@@ -1876,22 +1937,26 @@ def _compact_ohlc_bars(ohlc: list, max_bars: int) -> list:
         rows.append(
             [
                 int(dt.timestamp()),
-                round(float_or(b.get("open"), 0.0), 1),
-                round(float_or(b.get("high"), 0.0), 1),
-                round(float_or(b.get("low"), 0.0), 1),
-                round(float_or(b.get("close"), 0.0), 1),
+                round(float_or(b.get("open"), 0.0), price_decimals),
+                round(float_or(b.get("high"), 0.0), price_decimals),
+                round(float_or(b.get("low"), 0.0), price_decimals),
+                round(float_or(b.get("close"), 0.0), price_decimals),
                 int(float_or(b.get("volume"), 0.0)),
             ]
         )
     return rows
 
 
-def _compact_ohlc15_tail(ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BARS) -> list:
-    return _compact_ohlc_bars(ohlc_15, max_bars)
+def _compact_ohlc15_tail(
+    ohlc_15: list, max_bars: int = TRADE_JOURNAL_MAX_15M_BARS, price_decimals: int = 1
+) -> list:
+    return _compact_ohlc_bars(ohlc_15, max_bars, price_decimals)
 
 
-def _compact_ohlc5_tail(ohlc_5: list, max_bars: int = TRADE_JOURNAL_MAX_5M_BARS) -> list:
-    return _compact_ohlc_bars(ohlc_5, max_bars)
+def _compact_ohlc5_tail(
+    ohlc_5: list, max_bars: int = TRADE_JOURNAL_MAX_5M_BARS, price_decimals: int = 1
+) -> list:
+    return _compact_ohlc_bars(ohlc_5, max_bars, price_decimals)
 
 
 def _trade_journal_config() -> tuple[str, str]:
@@ -1904,9 +1969,13 @@ def _ingest_payload_from_snap(
     """build_snapshot の戻り値を trade-journal の投入ペイロードへ変換する。"""
     dt = _parse_bar_datetime_jst(snap.get("datetime", ""))
     bar_time = dt.isoformat() if dt else snap.get("datetime", "")
+    market = "fx" if snap.get("symbol") in YAHOO_FX_SYMBOLS else "nikkei"
+    yahoo_sym = yahoo_ohlc_symbol(str(snap.get("symbol") or "")) or snap.get("symbol")
     return {
         "barTime": bar_time,
         "source": source,
+        "market": market,
+        "symbol": yahoo_sym,
         "alertDir": alert_dir,
         "close": snap.get("close"),
         "prevHigh": snap.get("prev_high"),
@@ -1948,6 +2017,25 @@ def post_trade_journal_snapshot(payload: dict) -> None:
         pass
 
 
+def send_fx_snapshot_to_journal(
+    api_key: str,
+    symbol: str,
+    label: str,
+    bundle: dict | None = None,
+) -> None:
+    """FX のスナップショットを trade-journal へ送る（メール停止中でも投入）。"""
+    url, secret = _trade_journal_config()
+    if not url or not secret:
+        return
+    try:
+        snap = build_snapshot(api_key, symbol, label, False, bundle=bundle)
+        if not snap:
+            return
+        post_trade_journal_snapshot(_ingest_payload_from_snap(snap, "scan", None))
+    except Exception:
+        pass
+
+
 def send_nikkei_snapshot_to_journal(
     api_key: str,
     symbol: str,
@@ -1977,9 +2065,7 @@ def send_nikkei_snapshot_to_journal(
 def run_checks() -> dict:
     """全銘柄をチェックし、送信したアラート数とエラーを返す。監視時間外はアラートのみスキップ。"""
     settings = load_settings()
-    api_key = get_env("TWELVE_DATA_API_KEY")
-    if not api_key:
-        return {"ok": False, "error": "TWELVE_DATA_API_KEY not set", "sent": 0}
+    api_key = get_env("TWELVE_DATA_API_KEY")  # Yahoo 優先のため未設定でも可
 
     tz = ZoneInfo("Asia/Tokyo")
     now = datetime.now(tz)
@@ -2009,19 +2095,37 @@ def run_checks() -> dict:
     within_window = is_within_monitor_window(settings)
     should_send, summary_group, now_jst_str = should_send_daily_summary()
 
-    # 23:00台はサマリー送信と Twelve Data 取得が重なり FX が落ちやすいため、アラートはスキップ
+    # FX スナップショット投入はメール停止中でも行う（AUD/JPY も含む）
+    fx_ingest_symbols = [
+        ("USD/JPY", "USD/JPY", False),
+        ("EUR/JPY", "EUR/JPY", False),
+        ("AUD/JPY", "AUD/JPY", False),
+    ]
+    if ingest_fx_enabled(settings):
+        for symbol, label, _use_jst in fx_ingest_symbols:
+            try:
+                bundle = fetch_nikkei_market_data(api_key, symbol)
+                send_fx_snapshot_to_journal(api_key, symbol, label, bundle=bundle)
+            except Exception as e:
+                errors.append(f"ingest {symbol}: {str(e)[:200]}")
+
+    # 23:00台はサマリー送信と取得が重なりやすいため、アラートはスキップ
     if within_window and not should_send:
         symbols_fx = [s for s in symbols if not s[2]]
         symbols_nikkei = [s for s in symbols if s[2]]
         if not alerts_include_nikkei(settings):
             symbols_nikkei = []
+        if not alerts_include_fx(settings):
+            symbols_fx = []
 
         # FX・日経とも settings.json の監視時間内（既定 09:00〜23:00 JST）で評価。
-        # 日経は alerts.include_nikkei が false のときスキップ（再開時は true に戻す）。
-        # 日経 OHLC は Yahoo のため長い待機は不要。FX 連続呼び出し後に短い間隔のみ入れる。
+        # include_* が false のときスキップ（再開時は true に戻す）。
         for symbol, label, use_jst_1545 in symbols_fx:
             try:
-                alerts = evaluate_symbol(api_key, symbol, label, use_jst_session_1545=use_jst_1545)
+                bundle = fetch_nikkei_market_data(api_key, symbol)
+                alerts = evaluate_symbol(
+                    api_key, symbol, label, use_jst_session_1545=use_jst_1545, bundle=bundle
+                )
                 for a in alerts:
                     key = (a["symbol"], a["direction"])
                     if key in seen:
@@ -2031,8 +2135,6 @@ def run_checks() -> dict:
                     sent += 1
             except Exception as e:
                 errors.append(f"{symbol}: {str(e)[:200]}")
-        if symbols_nikkei:
-            time.sleep(2)
         for symbol, label, use_jst_1545 in symbols_nikkei:
             try:
                 bundle = fetch_nikkei_market_data(api_key, symbol)
@@ -2062,6 +2164,8 @@ def run_checks() -> dict:
             summary_symbols = list(symbols) if summary_group == "all" else []
             if not summary_include_nikkei(settings):
                 summary_symbols = [s for s in summary_symbols if not s[2]]
+            if not summary_include_fx(settings):
+                summary_symbols = [s for s in summary_symbols if s[2]]
             snapshots: list[dict] = []
             skip_notes: list[str] = []
             for symbol, label, use_jst_1545 in summary_symbols:

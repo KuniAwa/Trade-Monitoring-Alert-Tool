@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { defaultSymbol, parseMarket } from "@/lib/markets";
 import { computePnl, computeRMultiple } from "@/lib/tradeMath";
 import type { Direction } from "@/lib/types";
 
@@ -7,12 +8,17 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** entryAt に最も近い Signal を ±maxHours の窓で探す */
-async function findNearestSignalId(entryAt: Date, maxHours = 6): Promise<string | null> {
+async function findNearestSignalId(
+  entryAt: Date,
+  market: string,
+  symbol: string,
+  maxHours = 6
+): Promise<string | null> {
   const windowMs = maxHours * 60 * 60 * 1000;
   const from = new Date(entryAt.getTime() - windowMs);
   const to = new Date(entryAt.getTime() + windowMs);
   const candidates = await prisma.signal.findMany({
-    where: { barTime: { gte: from, lte: to } },
+    where: { barTime: { gte: from, lte: to }, market, symbol },
     select: { id: true, barTime: true }
   });
   if (!candidates.length) return null;
@@ -64,10 +70,15 @@ export async function POST(req: NextRequest) {
   const core = { direction: direction as Direction, entryPrice, exitPrice, quantity, stopPrice };
   const pnl = computePnl(core);
   const rMultiple = computeRMultiple(core);
-  const signalId = (body.signalId as string) || (await findNearestSignalId(entryAt));
+  const market = parseMarket(body.market);
+  const symbol =
+    typeof body.symbol === "string" && body.symbol.trim() ? body.symbol.trim() : defaultSymbol(market);
+  const signalId = (body.signalId as string) || (await findNearestSignalId(entryAt, market, symbol));
 
   const trade = await prisma.trade.create({
     data: {
+      market,
+      symbol,
       direction,
       entryAt,
       exitAt: exitAt && !Number.isNaN(exitAt.getTime()) ? exitAt : null,

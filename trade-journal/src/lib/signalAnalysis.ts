@@ -1,5 +1,7 @@
 import { buildFeatures } from "@/lib/features";
-import { fetch15mBars, forwardBarsAfter } from "@/lib/nikkeiData";
+import { NIKKEI_YAHOO_DEFAULT } from "@/lib/markets";
+import { fetch15mBars } from "@/lib/nikkeiData";
+import { fetchBarsForSymbol, forwardBarsAfter } from "@/lib/yahooData";
 import { computeOutcome } from "@/lib/outcome";
 import type { StatRecord } from "@/lib/stats";
 import type { CompactBar, Direction, OutcomeLabel, SignalFeatures } from "@/lib/types";
@@ -32,6 +34,8 @@ export interface SignalLike {
   featuresJson: unknown;
   ohlc15Json: unknown;
   outcomeJson: unknown;
+  market?: string | null;
+  symbol?: string | null;
 }
 
 /** シグナルの「想定方向」: アラート方向 → 無ければ1時間足トレンド。両方無ければ null。 */
@@ -79,14 +83,24 @@ export async function buildSignalRecords(signals: SignalLike[]): Promise<{
   records: StatRecord[];
   forwardBarsAvailable: boolean;
 }> {
-  let bars: CompactBar[] | null = null;
+  const barsBySymbol = new Map<string, CompactBar[]>();
   let forwardBarsAvailable = false;
-  try {
-    const fetched = await fetch15mBars("1mo");
-    bars = fetched.bars;
-    forwardBarsAvailable = true;
-  } catch {
-    bars = null;
+  const symbols = [...new Set(signals.map((s) => s.symbol || NIKKEI_YAHOO_DEFAULT))];
+  for (const symbol of symbols) {
+    try {
+      const fetched =
+        symbol === NIKKEI_YAHOO_DEFAULT || symbol === "^N225"
+          ? await fetch15mBars("1mo")
+          : await fetchBarsForSymbol(symbol, "15m", "1mo");
+      barsBySymbol.set(symbol, fetched.bars);
+      if (symbol === NIKKEI_YAHOO_DEFAULT || symbol === "^N225") {
+        barsBySymbol.set(NIKKEI_YAHOO_DEFAULT, fetched.bars);
+        barsBySymbol.set("^N225", fetched.bars);
+      }
+      forwardBarsAvailable = true;
+    } catch {
+      // このシンボルだけ前方足なし
+    }
   }
 
   const records: StatRecord[] = [];
@@ -96,6 +110,7 @@ export async function buildSignalRecords(signals: SignalLike[]): Promise<{
     const features = ensureFeatures(s);
     let outcome: OutcomeLabel | null =
       s.outcomeJson && typeof s.outcomeJson === "object" ? (s.outcomeJson as OutcomeLabel) : null;
+    const bars = barsBySymbol.get(s.symbol || NIKKEI_YAHOO_DEFAULT) ?? null;
 
     if (!outcome && bars) {
       const epoch = Math.floor(s.barTime.getTime() / 1000);

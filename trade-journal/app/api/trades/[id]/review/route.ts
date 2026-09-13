@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { generateTradeReview } from "@/lib/aiClient";
-import { fetch15mBars, forwardBarsAfter } from "@/lib/nikkeiData";
+import { NIKKEI_YAHOO_DEFAULT } from "@/lib/markets";
+import { fetch15mBars } from "@/lib/nikkeiData";
+import { fetchBarsForSymbol, forwardBarsAfter } from "@/lib/yahooData";
 import { computeOutcome } from "@/lib/outcome";
 import { ensureSignalFeatures } from "@/lib/signalFeatureRead";
 import { fmtJstForPrompt } from "@/lib/format";
@@ -25,7 +27,11 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   // 結果ラベル: エントリー後の値動き（同一データ = Yahoo 15分足）から算出
   let outcome: OutcomeLabel | null = null;
   try {
-    const { bars } = await fetch15mBars("1mo");
+    const symbol = trade.symbol || NIKKEI_YAHOO_DEFAULT;
+    const { bars } =
+      symbol === NIKKEI_YAHOO_DEFAULT || symbol === "^N225"
+        ? await fetch15mBars("1mo")
+        : await fetchBarsForSymbol(symbol, "15m", "1mo");
     const epoch = Math.floor(trade.entryAt.getTime() / 1000);
     const fwd = forwardBarsAfter(bars, epoch, 16);
     if (fwd.length) {

@@ -56,7 +56,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       reason: "reason" in body ? (body.reason as string) || null : existing.reason,
       emotion: "emotion" in body ? (body.emotion as string) || null : existing.emotion,
       note: "note" in body ? (body.note as string) || null : existing.note,
-      isVirtual: "isVirtual" in body ? Boolean(body.isVirtual) : existing.isVirtual
+      isVirtual: "isVirtual" in body ? Boolean(body.isVirtual) : existing.isVirtual,
+      symbol: typeof body.symbol === "string" && body.symbol.trim() ? body.symbol.trim() : existing.symbol
     }
   });
 

@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { parseMarket } from "@/lib/markets";
 import { assembleAnalysis } from "@/lib/assembleRecords";
 import { generateConditionDiscovery } from "@/lib/aiClient";
-import { CURRENT_RULES_SUMMARY } from "@/prompts/conditionDiscovery";
+import { currentRulesForMarket } from "@/prompts/conditionDiscovery";
 import type { StatRecord } from "@/lib/stats";
 
 export const runtime = "nodejs";
@@ -33,8 +34,9 @@ function pickSamples(records: StatRecord[], n = 6): unknown[] {
   return [...top, ...bottom];
 }
 
-export async function GET() {
-  const analysis = await assembleAnalysis();
+export async function GET(req: NextRequest) {
+  const market = parseMarket(req.nextUrl.searchParams.get("market"));
+  const analysis = await assembleAnalysis(35, market);
   return NextResponse.json({
     ok: true,
     stats: analysis.stats,
@@ -44,14 +46,15 @@ export async function GET() {
   });
 }
 
-export async function POST() {
-  const analysis = await assembleAnalysis();
+export async function POST(req: NextRequest) {
+  const market = parseMarket(req.nextUrl.searchParams.get("market"));
+  const analysis = await assembleAnalysis(35, market);
   let discovery;
   try {
     discovery = await generateConditionDiscovery({
       stats: analysis.stats,
       samples: pickSamples(analysis.records),
-      currentRules: CURRENT_RULES_SUMMARY
+      currentRules: currentRulesForMarket(market)
     });
   } catch (e) {
     return NextResponse.json(

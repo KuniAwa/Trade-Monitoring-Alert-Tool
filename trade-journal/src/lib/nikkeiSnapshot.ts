@@ -125,12 +125,15 @@ function prevBusinessDayJst(todayKey: string): string {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-function sessionHighLowFrom15m(bars: CompactBar[], sessionDateKey: string): { high: number; low: number } | null {
-  const windows: [number, number][] = [
+function sessionHighLowFrom15m(
+  bars: CompactBar[],
+  sessionDateKey: string,
+  windows: [number, number][] = [
     [9 * 60, 15 * 60 + 45],
     [8 * 60, 16 * 60],
     [0, 24 * 60 - 1]
-  ];
+  ]
+): { high: number; low: number } | null {
   for (const [startMin, endMin] of windows) {
     const highs: number[] = [];
     const lows: number[] = [];
@@ -147,7 +150,10 @@ function sessionHighLowFrom15m(bars: CompactBar[], sessionDateKey: string): { hi
   return null;
 }
 
-function computePrevSessionHl(bars15: CompactBar[]): { high: number; low: number } | null {
+function computePrevSessionHl(
+  bars15: CompactBar[],
+  mode: "jst_session" | "prev_weekday"
+): { high: number; low: number } | null {
   const todayKey = dateKey(jstParts(Math.floor(Date.now() / 1000)));
   const dates = new Set<string>();
   for (const b of bars15) {
@@ -156,8 +162,14 @@ function computePrevSessionHl(bars15: CompactBar[]): { high: number; low: number
   }
   const candidates = [...dates].sort().reverse();
   if (!candidates.length) candidates.push(prevBusinessDayJst(todayKey));
+  const windows: [number, number][] =
+    mode === "prev_weekday" ? [[0, 24 * 60 - 1]] : [
+      [9 * 60, 15 * 60 + 45],
+      [8 * 60, 16 * 60],
+      [0, 24 * 60 - 1]
+    ];
   for (const dk of candidates) {
-    const hl = sessionHighLowFrom15m(bars15, dk);
+    const hl = sessionHighLowFrom15m(bars15, dk, windows);
     if (hl) return hl;
   }
   return null;
@@ -360,11 +372,29 @@ function fmtJstFromEpoch(epochSec: number): string {
   return `${s} JST`;
 }
 
-export function buildNikkeiMarketSnapshot(
+export function buildFxMarketSnapshot(
   symbol: string,
   bars15: CompactBar[],
   bars1h: CompactBar[],
   bars5?: CompactBar[]
+): NikkeiMarketSnapshot | null {
+  return buildNikkeiMarketSnapshot(symbol, bars15, bars1h, bars5, {
+    includeVwap: false,
+    prevHlMode: "prev_weekday",
+    prevHlLabel: "前営業日高安（24時間）"
+  });
+}
+
+export function buildNikkeiMarketSnapshot(
+  symbol: string,
+  bars15: CompactBar[],
+  bars1h: CompactBar[],
+  bars5?: CompactBar[],
+  options?: {
+    includeVwap?: boolean;
+    prevHlMode?: "jst_session" | "prev_weekday";
+    prevHlLabel?: string;
+  }
 ): NikkeiMarketSnapshot | null {
   const fetchedAtSec = Math.floor(Date.now() / 1000);
   const n = bars15.length;
@@ -375,7 +405,9 @@ export function buildNikkeiMarketSnapshot(
   const close = bar[4];
   if (close <= 0) return null;
 
-  const prevHl = computePrevSessionHl(bars15);
+  const includeVwap = options?.includeVwap !== false;
+  const prevHlMode = options?.prevHlMode ?? "jst_session";
+  const prevHl = computePrevSessionHl(bars15, prevHlMode);
   if (!prevHl || prevHl.high <= 0 || prevHl.low <= 0) return null;
 
   const closes15 = bars15.map((b) => b[4]);
@@ -402,9 +434,13 @@ export function buildNikkeiMarketSnapshot(
 
   const longO = longOshiritsu(bars15, prevHl.high, close, fetchedAtSec);
   const shortO = shortOshiritsu(bars15, prevHl.low, close, fetchedAtSec);
-  const vwap = sessionVwapAtBar(bars15, idx);
+  const vwap = includeVwap ? sessionVwapAtBar(bars15, idx) : null;
 
-  const fiveMin = bars5?.length ? buildFiveMinMetrics(bars5, fetchedAtSec) : null;
+  const fiveMinRaw = bars5?.length ? buildFiveMinMetrics(bars5, fetchedAtSec) : null;
+  const fiveMin =
+    fiveMinRaw && !includeVwap
+      ? { ...fiveMinRaw, vwap: null, vwapLabel: "" }
+      : fiveMinRaw;
 
   const lag15 = barLagMinutes(bar[0], INTERVAL_15M, fetchedAtSec);
   const warn15 = staleDataWarningJa(lag15, "15分足");
@@ -429,14 +465,14 @@ export function buildNikkeiMarketSnapshot(
     ma20_15m: ma20,
     atr15,
     vwap,
-    vwapLabel: "本日JSTセッションVWAP",
+    vwapLabel: includeVwap ? "本日JSTセッションVWAP" : "",
     longThreshold,
     shortThreshold,
     firstBreakLong,
     firstBreakShort,
     prevHigh: prevHl.high,
     prevLow: prevHl.low,
-    prevHlLabel: "前営業日・JST日中セッション高安",
+    prevHlLabel: options?.prevHlLabel ?? "前営業日・JST日中セッション高安",
     close1h: trend1h.close,
     ema20_1h: trend1h.emaFast,
     ema50_1h: trend1h.emaSlow,

@@ -8,9 +8,14 @@
     "lookback_days": 10
   },
   "summary": {
-    "include_nikkei": false
+    "include_nikkei": false,
+    "include_fx": false
   },
   "alerts": {
-    "include_nikkei": false
+    "include_nikkei": false,
+    "include_fx": false
+  },
+  "ingest": {
+    "fx": true
   }
 }

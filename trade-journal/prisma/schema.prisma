@@ -22,6 +22,10 @@ model Signal {
   barTime    DateTime
   /// "scan"（毎回の定点観測） | "alert"（条件成立） | "summary"（日次）
   source     String   @default("scan")
+  /// "nikkei" | "fx"
+  market     String   @default("nikkei")
+  /// Yahoo シンボル（例: NIY=F / JPY=X）
+  symbol     String   @default("NIY=F")
   /// アラート発火方向 "long" | "short" | null（未発火）
   alertDir   String?
 
@@ -60,6 +64,8 @@ model Signal {
   @@index([barTime])
   @@index([source])
   @@index([alertDir])
+  @@index([market, barTime])
+  @@index([market, symbol, barTime])
 }
 
 /// ユーザーが iPhone から登録する取引実績（仮想取引も含む）。
@@ -68,6 +74,10 @@ model Trade {
   entryAt    DateTime
   exitAt     DateTime?
   direction  String // "long" | "short"
+  /// "nikkei" | "fx"
+  market     String    @default("nikkei")
+  /// Yahoo シンボル（例: NIY=F / JPY=X）
+  symbol     String    @default("NIY=F")
   entryPrice Float
   exitPrice  Float?
   quantity   Float     @default(1)
@@ -98,4 +108,5 @@ model Trade {
 
   @@index([entryAt])
   @@index([isVirtual])
+  @@index([market, entryAt])
 }

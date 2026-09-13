@@ -8,10 +8,12 @@ type ReviewWithMeta = TradeReview & { outcome?: OutcomeLabel | null; generatedAt
 
 export function TradeReviewClient({
   tradeId,
-  initialReview
+  initialReview,
+  homeHref = "/"
 }: {
   tradeId: string;
   initialReview: ReviewWithMeta | null;
+  homeHref?: string;
 }) {
   const router = useRouter();
   const [review, setReview] = useState<ReviewWithMeta | null>(initialReview);
@@ -36,7 +38,7 @@ export function TradeReviewClient({
   async function remove() {
     if (!confirm("この取引を削除しますか？")) return;
     await fetch(`/api/trades/${tradeId}`, { method: "DELETE" });
-    router.push("/");
+    router.push(homeHref);
     router.refresh();
   }
 

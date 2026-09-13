@@ -1,8 +1,10 @@
-# 日経先物トレード日誌（trade-journal）
+# トレード日誌（trade-journal）
 
-日経225先物の取引実績を iPhone から記録し、**相場監視アラートツール（market-alert）と同一データ**
-（Yahoo Finance の15分足・1時間足・出来高から算出した指標）を使って、AI が改善点や
+日経225先物と FX（USD/JPY・EUR/JPY・AUD/JPY）の取引実績を iPhone から記録し、
+**Yahoo Finance の同一データ**（15分足・1時間足、日経は出来高も）を使って、AI が改善点や
 「より良い売買条件」を分析・コメントする個人用 Web アプリ（PWA）です。
+
+入口（`/`）で **Nikkei 225** と **FX** を分けます。FX の履歴・集計は 3 通貨ペア合算です。
 
 - **別ツール**として独立（`market-alert` は監視・連携元として存続）
 - **DB は Neon（PostgreSQL）**。取引ツール専用の Project を新規作成して使う
@@ -19,9 +21,10 @@
 
 ```
 market-alert (Python Cron, 15分毎)
-   └─ 日経の確定足スナップショット（同一データ）を POST /api/ingest
+   └─ 日経 / FX の確定足スナップショット（Yahoo）を POST /api/ingest
         └─ Neon に保存（数値は丸め・15分足は直近20本に限定）
 trade-journal (この Next.js アプリ / PWA)
+   ├─ 入口で Nikkei / FX を選択
    ├─ iPhone から取引登録・閲覧
    ├─ 結果ラベルは分析時に Yahoo の前方足から算出（保存しない＝容量削減）
    └─ OpenAI で取引レビュー・条件探索
@@ -31,7 +34,7 @@ trade-journal (この Next.js アプリ / PWA)
 
 「保存先 DB の容量を減らす対策」を以下の形で実装しています。
 
-1. **日経のみ保存**（FX は保存しない）。
+1. **市場別に保存**（日経と FX を `market` / `symbol` で分離。FX は 3 ペア合算で表示）。
 2. **数値の丸め**（価格は小数1桁、比率は3桁）で1行のサイズを縮小（`src/lib/compaction.ts`）。
 3. **15分足の小窓のみ保存**（直近 `MAX_STORED_15M_BARS=20` 本、`[epoch,o,h,l,c,v]` の配列形式）。
 4. **結果ラベルは保存せず分析時に算出**（同一データ＝Yahoo の前方足を都度取得）。

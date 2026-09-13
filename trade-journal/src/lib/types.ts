@@ -1,5 +1,6 @@
 export type Direction = "long" | "short";
 export type SignalSource = "scan" | "alert" | "summary";
+export type MarketKind = "nikkei" | "fx";
 
 /** 圧縮ローソク足: [epochSec, open, high, low, close, volume] */
 export type CompactBar = [number, number, number, number, number, number];
@@ -9,6 +10,8 @@ export interface IngestPayload {
   /** 判定対象の確定足時刻（ISO文字列, JST想定） */
   barTime: string;
   source: SignalSource;
+  market?: MarketKind;
+  symbol?: string;
   alertDir?: Direction | null;
   close: number;
   prevHigh?: number | null;

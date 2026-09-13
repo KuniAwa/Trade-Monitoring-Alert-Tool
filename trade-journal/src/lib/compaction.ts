@@ -8,8 +8,9 @@ import type { CompactBar, IngestPayload } from "@/lib/types";
  *  - 生OHLCの保持日数（超過分は prune で null 化）
  */
 
-/** 価格の保存桁数（日経は整数〜小数1桁で十分） */
-const PRICE_DECIMALS = 1;
+/** 価格の保存桁数（日経は小数1桁、FXは小数3桁） */
+const PRICE_DECIMALS_NIKKEI = 1;
+const PRICE_DECIMALS_FX = 3;
 /** 比率・指標の保存桁数 */
 const RATIO_DECIMALS = 3;
 /** スナップショットに保存する15分足の最大本数（容量削減） */
@@ -23,8 +24,8 @@ export function roundTo(value: number | null | undefined, decimals: number): num
   return Math.round(value * f) / f;
 }
 
-export function roundPrice(value: number | null | undefined): number | null {
-  return roundTo(value, PRICE_DECIMALS);
+export function roundPrice(value: number | null | undefined, decimals = PRICE_DECIMALS_NIKKEI): number | null {
+  return roundTo(value, decimals);
 }
 
 export function roundRatio(value: number | null | undefined): number | null {
@@ -32,17 +33,21 @@ export function roundRatio(value: number | null | undefined): number | null {
 }
 
 /** OHLC 窓を「直近 N 本」に制限し、価格を丸め、出来高は整数化する。 */
-export function compactBars(bars: CompactBar[] | undefined, maxBars = MAX_STORED_15M_BARS): CompactBar[] | null {
+export function compactBars(
+  bars: CompactBar[] | undefined,
+  maxBars = MAX_STORED_15M_BARS,
+  priceDecimals = PRICE_DECIMALS_NIKKEI
+): CompactBar[] | null {
   if (!bars || !bars.length) return null;
   const tail = bars.slice(Math.max(0, bars.length - maxBars));
   return tail.map(
     (b) =>
       [
         Math.round(b[0]),
-        roundPrice(b[1]) ?? 0,
-        roundPrice(b[2]) ?? 0,
-        roundPrice(b[3]) ?? 0,
-        roundPrice(b[4]) ?? 0,
+        roundPrice(b[1], priceDecimals) ?? 0,
+        roundPrice(b[2], priceDecimals) ?? 0,
+        roundPrice(b[3], priceDecimals) ?? 0,
+        roundPrice(b[4], priceDecimals) ?? 0,
         Math.round(b[5] ?? 0)
       ] as CompactBar
   );
@@ -54,26 +59,27 @@ export function normalizeIngestPayload(p: IngestPayload): {
   ohlc15: CompactBar[] | null;
   ohlc5: CompactBar[] | null;
 } {
+  const priceDecimals = p.market === "fx" ? PRICE_DECIMALS_FX : PRICE_DECIMALS_NIKKEI;
   return {
     numeric: {
-      close: roundPrice(p.close) ?? 0,
-      prevHigh: roundPrice(p.prevHigh),
-      prevLow: roundPrice(p.prevLow),
-      ma20: roundPrice(p.ma20),
-      atr15: roundPrice(p.atr15),
-      longThreshold: roundPrice(p.longThreshold),
-      shortThreshold: roundPrice(p.shortThreshold),
-      close1h: roundPrice(p.close1h),
-      ema20_1h: roundPrice(p.ema20_1h),
-      ema50_1h: roundPrice(p.ema50_1h),
+      close: roundPrice(p.close, priceDecimals) ?? 0,
+      prevHigh: roundPrice(p.prevHigh, priceDecimals),
+      prevLow: roundPrice(p.prevLow, priceDecimals),
+      ma20: roundPrice(p.ma20, priceDecimals),
+      atr15: roundPrice(p.atr15, priceDecimals),
+      longThreshold: roundPrice(p.longThreshold, priceDecimals),
+      shortThreshold: roundPrice(p.shortThreshold, priceDecimals),
+      close1h: roundPrice(p.close1h, priceDecimals),
+      ema20_1h: roundPrice(p.ema20_1h, priceDecimals),
+      ema50_1h: roundPrice(p.ema50_1h, priceDecimals),
       trendUp: Boolean(p.trendUp),
       trendDown: Boolean(p.trendDown),
       oshiritsuLong: roundRatio(p.oshiritsuLong),
       oshiritsuShort: roundRatio(p.oshiritsuShort),
       volumeRatio: roundRatio(p.volumeRatio)
     },
-    ohlc15: compactBars(p.ohlc15, MAX_STORED_15M_BARS),
-    ohlc5: compactBars(p.ohlc5, MAX_STORED_5M_BARS)
+    ohlc15: compactBars(p.ohlc15, MAX_STORED_15M_BARS, priceDecimals),
+    ohlc5: compactBars(p.ohlc5, MAX_STORED_5M_BARS, priceDecimals)
   };
 }
 
